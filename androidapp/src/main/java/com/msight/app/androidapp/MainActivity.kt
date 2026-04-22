@@ -50,7 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.msight.app.client.LocationEmitter
-import com.msight.app.client.LocationEvent
+import com.msight.app.client.MSightLocationEvent
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
