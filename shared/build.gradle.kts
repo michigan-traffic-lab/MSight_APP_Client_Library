@@ -17,6 +17,15 @@ kotlin {
             }
         }
     }
+    jvm {
+        compilations.all {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    jvmTarget.set(JvmTarget.JVM_1_8)
+                }
+            }
+        }
+    }
     
 //    val xcf = XCFramework()
 //    listOf(
@@ -30,14 +39,20 @@ kotlin {
 //            isStatic = true
 //        }
 //    }
-
-    // jvm()
-
     sourceSets {
         commonMain.dependencies {
             //put your multiplatform dependencies here
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.0")
+            implementation("io.ktor:ktor-client-core:2.3.12")
+            implementation("io.ktor:ktor-client-websockets:2.3.12")
+        }
+        androidMain.dependencies {
+            implementation("io.ktor:ktor-client-okhttp:2.3.12")
             implementation(libs.play.services.location)
+        }
+        jvmMain.dependencies {
+            implementation("io.ktor:ktor-client-cio:2.3.12")
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -57,16 +72,16 @@ android {
     }
 }
 
-//tasks.register<JavaExec>("runJvmMain") {
-//    group = "application"
-//    description = "Run the JVM main class"
-//
-//    dependsOn("jvmJar")
-//
-//    classpath(
-//        tasks.named("jvmJar"),
-//        kotlin.targets.getByName("jvm").compilations.getByName("main").runtimeDependencyFiles
-//    )
-//
-//    mainClass.set("com.msight.app.client.MainKt")
-//}
+tasks.register<JavaExec>("runJvmMain") {
+    group = "application"
+    description = "Run the JVM main class"
+
+    dependsOn("jvmJar")
+
+    classpath(
+        tasks.named("jvmJar"),
+        kotlin.targets.getByName("jvm").compilations.getByName("main").runtimeDependencyFiles
+    )
+
+    mainClass.set("com.msight.app.client.MainKt")
+}
