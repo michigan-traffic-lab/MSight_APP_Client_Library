@@ -27,6 +27,10 @@ actual class PlatformLocationProvider actual constructor(
             var longitude = -83.7430
 
             while (isActive) {
+                // println(
+                //     "INFO: JVM location update lat=$latitude, lon=$longitude, altitude=256.0, accuracy=3.5"
+                // )
+
                 onLocation(
                     MSightLocationEvent(
                         timestampMillis = System.currentTimeMillis(),
@@ -40,8 +44,8 @@ actual class PlatformLocationProvider actual constructor(
                     )
                 )
 
-                latitude += 0.0001
-                longitude += 0.0001
+                // latitude += 0.0001
+                // longitude += 0.0001
                 delay(250L)
             }
         }

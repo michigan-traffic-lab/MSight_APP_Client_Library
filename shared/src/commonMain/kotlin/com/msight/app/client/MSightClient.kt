@@ -11,16 +11,23 @@ import io.ktor.http.ContentType
 import io.ktor.http.URLBuilder
 import io.ktor.http.content.TextContent
 import io.ktor.http.contentType
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.math.roundToLong
 
@@ -53,13 +60,19 @@ class MSightClient(
     val config: MSightClientConfig
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val httpClient = HttpClient {
+    private val httpClient = createPlatformHttpClient {
         install(WebSockets)
     }
+    private val _events = MutableSharedFlow<MSightEvent>(
+        replay = 0,
+        extraBufferCapacity = 64
+    )
 
     private var locationUploader: MSightLocationUploader? = null
     private var locationUpdateEmitter: MSightLocationUpdateEmitter? = null
     private var webSocketConnection: MSightWebSocketConnection? = null
+
+    val events: SharedFlow<MSightEvent> = _events.asSharedFlow()
 
     init {
         runBlocking {
@@ -80,12 +93,17 @@ class MSightClient(
         locationUpdateEmitter = MSightLocationUpdateEmitter(
             context = context,
             updateFrequencyHz = config.locationUpdateFrequencyHz,
-            onLocation = initializedLocationUploader::upload
+            onLocation = { locationEvent ->
+                initializedLocationUploader.upload(locationEvent)
+                _events.tryEmit(locationEvent)
+            }
         )
         webSocketConnection = MSightWebSocketConnection(
             config = config,
             client = httpClient,
-            scope = scope
+            scope = scope,
+            onConnected = initializedLocationUploader::resendLastKnownLocation,
+            onEvent = { event -> _events.tryEmit(event) }
         )
 
         try {
@@ -154,11 +172,23 @@ private class MSightLocationUploader(
     private val scope: CoroutineScope
 ) {
     private val locationUpdateUrl = config.cloudUrl.trimEnd('/') + LOCATION_UPDATE_PATH
+    private var lastKnownLocationEvent: MSightLocationEvent? = null
 
     fun upload(locationEvent: MSightLocationEvent) {
+        lastKnownLocationEvent = locationEvent
+        uploadInternal(locationEvent)
+    }
+
+    fun resendLastKnownLocation() {
+        val locationEvent = lastKnownLocationEvent ?: return
+        logInfo("MSightLocationUploader resending last known location after websocket connect")
+        uploadInternal(locationEvent)
+    }
+
+    private fun uploadInternal(locationEvent: MSightLocationEvent) {
         scope.launch {
             runCatching {
-                val response = client.post(locationUpdateUrl) {
+                client.post(locationUpdateUrl) {
                     contentType(ContentType.Application.Json)
                     setBody(
                         TextContent(
@@ -167,9 +197,9 @@ private class MSightLocationUploader(
                         )
                     )
                 }
-
-                logInfo(
-                    "MSightLocationUploader response: status=${response.status.value}, body=${response.bodyAsText()}"
+            }.onFailure { throwable ->
+                logError(
+                    "MSightLocationUploader failed: error=${describeThrowable(throwable)}"
                 )
             }
         }
@@ -182,13 +212,16 @@ private class MSightLocationUploader(
 private class MSightWebSocketConnection(
     private val config: MSightClientConfig,
     private val client: HttpClient,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val onConnected: () -> Unit,
+    private val onEvent: (MSightEvent) -> Unit
 ) {
     enum class State {
         NO_URL_ASSIGNED,
         URL_ASSIGNED,
         CONNECTED,
         DISCONNECTED,
+        RECONNECTING,
         CONNECTION_FAILED
     }
 
@@ -209,25 +242,23 @@ private class MSightWebSocketConnection(
         val connectionReady = CompletableDeferred<Unit>()
 
         lifecycleJob = scope.launch {
-            runCatching {
-                val resolvedWebSocketUrl = fetchWebSocketUrl()
-                websocketUrl = resolvedWebSocketUrl
-                state = State.URL_ASSIGNED
-                logInfo("MSightWebSocketConnection obtained websocket url: $resolvedWebSocketUrl, state=$state")
-                connectInternal(resolvedWebSocketUrl, connectionReady)
-            }.onFailure { throwable ->
+            try {
+                runConnectionLoop(connectionReady)
+            } catch (throwable: Throwable) {
                 if (throwable is CancellationException) {
                     state = State.DISCONNECTED
                     connectionReady.cancel(throwable)
-                    return@onFailure
+                    throw throwable
                 }
 
                 state = State.CONNECTION_FAILED
                 logError(
                     "MSightWebSocketConnection initialization failed: state=$state, error=${describeThrowable(throwable)}"
                 )
-                connectionReady.completeExceptionally(throwable)
-            }.also {
+                if (!connectionReady.isCompleted) {
+                    connectionReady.completeExceptionally(throwable)
+                }
+            } finally {
                 lifecycleJob = null
             }
         }
@@ -236,26 +267,24 @@ private class MSightWebSocketConnection(
     }
 
     fun connect() {
-        val resolvedWebSocketUrl = websocketUrl
-            ?: error("MSightWebSocketConnection cannot connect before URL assignment; state=$state")
-        if (lifecycleJob != null || state == State.CONNECTED) {
+        if (lifecycleJob != null || state == State.CONNECTED || state == State.RECONNECTING) {
             return
         }
 
         lifecycleJob = scope.launch {
-            runCatching {
-                connectInternal(resolvedWebSocketUrl, null)
-            }.onFailure { throwable ->
+            try {
+                runConnectionLoop(connectionReady = null)
+            } catch (throwable: Throwable) {
                 if (throwable is CancellationException) {
                     state = State.DISCONNECTED
-                    return@onFailure
+                    throw throwable
                 }
 
                 state = State.CONNECTION_FAILED
                 logError(
-                    "MSightWebSocketConnection failed: state=$state, url=$resolvedWebSocketUrl, error=${describeThrowable(throwable)}"
+                    "MSightWebSocketConnection failed: state=$state, error=${describeThrowable(throwable)}"
                 )
-            }.also {
+            } finally {
                 lifecycleJob = null
             }
         }
@@ -265,6 +294,53 @@ private class MSightWebSocketConnection(
         lifecycleJob?.cancel()
         lifecycleJob = null
         state = State.DISCONNECTED
+    }
+
+    private suspend fun runConnectionLoop(connectionReady: CompletableDeferred<Unit>?) {
+        var reconnectDelayMillis = INITIAL_RECONNECT_DELAY_MILLIS
+
+        while (scope.isActive) {
+            try {
+                val resolvedWebSocketUrl = fetchWebSocketUrl()
+                websocketUrl = resolvedWebSocketUrl
+                state = State.URL_ASSIGNED
+                logInfo("MSightWebSocketConnection obtained websocket url: $resolvedWebSocketUrl, state=$state")
+
+                connectInternal(resolvedWebSocketUrl, connectionReady)
+                reconnectDelayMillis = INITIAL_RECONNECT_DELAY_MILLIS
+
+                if (!scope.isActive) {
+                    break
+                }
+
+                state = State.RECONNECTING
+                logInfo(
+                    "MSightWebSocketConnection disconnected; retrying in ${reconnectDelayMillis}ms, state=$state"
+                )
+                delay(reconnectDelayMillis)
+                reconnectDelayMillis = nextReconnectDelayMillis(reconnectDelayMillis)
+            } catch (throwable: Throwable) {
+                if (throwable is CancellationException) {
+                    throw throwable
+                }
+
+                state = State.CONNECTION_FAILED
+                logError(
+                    "MSightWebSocketConnection connection attempt failed: state=$state, error=${describeThrowable(throwable)}"
+                )
+                if (connectionReady != null && !connectionReady.isCompleted) {
+                    connectionReady.completeExceptionally(throwable)
+                    return
+                }
+
+                state = State.RECONNECTING
+                logInfo(
+                    "MSightWebSocketConnection retrying after failure in ${reconnectDelayMillis}ms, state=$state"
+                )
+                delay(reconnectDelayMillis)
+                reconnectDelayMillis = nextReconnectDelayMillis(reconnectDelayMillis)
+            }
+        }
     }
 
     private suspend fun fetchWebSocketUrl(): String {
@@ -289,14 +365,122 @@ private class MSightWebSocketConnection(
         client.webSocket(urlString = connectUrl) {
             state = State.CONNECTED
             logInfo("MSightWebSocketConnection connected: url=$connectUrl, state=$state")
-            connectionReady?.complete(Unit)
-            awaitCancellation()
+            onConnected()
+            if (connectionReady != null && !connectionReady.isCompleted) {
+                connectionReady.complete(Unit)
+            }
+
+            for (frame in incoming) {
+                when (frame) {
+                    is Frame.Text -> handleTextFrame(frame.readText())
+                    is Frame.Binary -> logInfo(
+                        "MSightWebSocketConnection received binary frame: size=${frame.data.size}"
+                    )
+                    else -> Unit
+                }
+            }
         }
 
         if (state == State.CONNECTED) {
             state = State.DISCONNECTED
         }
     }
+
+    private fun handleTextFrame(rawMessage: String) {
+        val parsedEvent = parseSocketMessage(rawMessage)
+        if (parsedEvent == null) {
+            logInfo("MSightWebSocketConnection received unparsed message: $rawMessage")
+            return
+        }
+
+        onEvent(parsedEvent)
+    }
+}
+
+private fun nextReconnectDelayMillis(currentDelayMillis: Long): Long {
+    return (currentDelayMillis * 2).coerceAtMost(MAX_RECONNECT_DELAY_MILLIS)
+}
+
+private fun parseSocketMessage(rawMessage: String): MSightEvent? {
+    if (!looksLikeJsonObject(rawMessage)) {
+        return null
+    }
+
+    val payloadJson = extractJsonObjectField(rawMessage, "message") ?: rawMessage
+    val messageType = extractJsonStringField(payloadJson, "message_type") ?: return null
+
+    return when (messageType) {
+        SIMPLE_WARNING_MESSAGE_TYPE -> parseSimpleWarningEvent(
+            envelopeJson = rawMessage,
+            payloadJson = payloadJson
+        )
+        else -> null
+    }
+}
+
+private fun parseSimpleWarningEvent(
+    envelopeJson: String,
+    payloadJson: String
+): MSightSimpleWarning? {
+    val message = extractJsonStringField(payloadJson, "message") ?: return null
+    val timestampIsoString = extractJsonStringField(payloadJson, "timestamp")
+        ?: extractJsonStringField(envelopeJson, "server_timestamp")
+
+    val timestampMillis = timestampIsoString
+        ?.let(::parseIsoTimestampMillis)
+        ?: currentTimeMillis()
+
+    return MSightSimpleWarning(
+        timestampMillis = timestampMillis,
+        message = message
+    )
+}
+
+private fun parseIsoTimestampMillis(value: String): Long? {
+    return runCatching {
+        Instant.parse(value).toEpochMilliseconds()
+    }.getOrNull()
+}
+
+private fun currentTimeMillis(): Long =
+    Clock.System.now().toEpochMilliseconds()
+
+private fun looksLikeJsonObject(value: String): Boolean {
+    val trimmed = value.trim()
+    return trimmed.startsWith("{") && trimmed.endsWith("}")
+}
+
+private fun extractJsonObjectField(json: String, fieldName: String): String? {
+    val fieldToken = "\"$fieldName\""
+    val fieldIndex = json.indexOf(fieldToken)
+    if (fieldIndex < 0) {
+        return null
+    }
+
+    val colonIndex = json.indexOf(':', startIndex = fieldIndex + fieldToken.length)
+    if (colonIndex < 0) {
+        return null
+    }
+
+    val objectStartIndex = json.indexOf('{', startIndex = colonIndex + 1)
+    if (objectStartIndex < 0) {
+        return null
+    }
+
+    var depth = 0
+    for (index in objectStartIndex until json.length) {
+        when (json[index]) {
+            '{' -> depth += 1
+            '}' -> {
+                depth -= 1
+                if (depth == 0) {
+                    return json.substring(objectStartIndex, index + 1)
+                }
+            }
+        }
+    }
+
+    return null
 }
 
 private fun buildLocationUpdatePayload(
@@ -395,3 +579,6 @@ private fun describeThrowable(throwable: Throwable): String {
 
 private const val LOCATION_UPDATE_PATH = "/v1/clients/location/update"
 private const val WEBSOCKET_URL_PATH = "/system/websocket-url"
+private const val INITIAL_RECONNECT_DELAY_MILLIS = 1_000L
+private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
+private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"

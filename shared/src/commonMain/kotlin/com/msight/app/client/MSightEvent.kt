@@ -19,6 +19,11 @@ sealed class MSightWarningEvent(
     override val timestampMillis: Long
 ) : MSightEvent(timestampMillis)
 
+data class MSightSimpleWarning(
+    override val timestampMillis: Long,
+    val message: String
+) : MSightWarningEvent(timestampMillis)
+
 sealed class MSightConflictWarningEvent(
     override val timestampMillis: Long,
     open val ttcSeconds: Double?,

@@ -1,14 +1,22 @@
 package com.msight.app.client
 
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+
 private object JvmPlatformContext : PlatformContext()
 
-private const val DEFAULT_TEST_RUNTIME_MILLIS = 10000L
-private const val DEFAULT_CLOUD_URL = "https://yj9zamc3jf.execute-api.us-east-1.amazonaws.com"
+private const val DEFAULT_TEST_RUNTIME_MILLIS = -1L
+private const val DEFAULT_CLOUD_URL = "https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com"
 private const val DEFAULT_APP_ID = "msight-demo"
 private const val DEFAULT_CLIENT_ID = "client-001"
 private const val DEFAULT_ROAD_USER_SUBTYPE = "passenger_car"
 
-fun main() {
+fun main() = runBlocking {
     val runtimeMillis = readLongSetting(
         envName = "MSIGHT_TEST_RUNTIME_MILLIS",
         propertyName = "msight.test.runtimeMillis",
@@ -51,15 +59,44 @@ fun main() {
         )
     } catch (throwable: Throwable) {
         println("Failed to create MSightClient: ${describeThrowable(throwable)}")
-        throw throwable
+        return@runBlocking
     }
 
-    println("MSightClient constructed; starting location updates")
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            println("Shutdown requested; closing MSightClient")
+            client.close()
+        }
+    )
+
+    val eventCollectionJob = launch {
+        client.events.collect { event ->
+            printEvent(event)
+        }
+    }
+
+    println("MSightClient constructed; starting background client work")
     client.start()
+
+    if (runtimeMillis < 0L) {
+        println("Running until terminated because runtimeMillis is negative. Press Ctrl+C to stop.")
+        awaitCancellation()
+    }
+
     println("Waiting ${runtimeMillis}ms to observe websocket and upload logs")
-    Thread.sleep(runtimeMillis)
+    delay(runtimeMillis)
     println("Closing MSightClient")
+    eventCollectionJob.cancelAndJoin()
     client.close()
+}
+
+private fun printEvent(event: MSightEvent) {
+    when (event) {
+        is MSightSimpleWarning -> println(
+            "Received MSightSimpleWarning: timestampMillis=${event.timestampMillis}, message=${event.message}"
+        )
+        else -> println("Received event: $event")
+    }
 }
 
 private fun readStringSetting(
