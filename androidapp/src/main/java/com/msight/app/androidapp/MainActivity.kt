@@ -15,7 +15,9 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +30,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,12 +47,18 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,12 +68,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapType
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.rememberCameraPositionState
 import com.msight.app.androidapp.ui.theme.MsightappclientlibraryTheme
 import com.msight.app.client.MSightClient
 import com.msight.app.client.MSightClientConfig
@@ -111,6 +131,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MsightappclientlibraryTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -169,10 +190,6 @@ class MainActivity : ComponentActivity() {
                         when (event) {
                             is MSightLocationEvent -> {
                                 latestLocation = event
-                                Log.d(
-                                    "MSight",
-                                    "Location update: lat=${event.latitude}, lon=${event.longitude}, accuracy=${event.accuracyMeters}, provider=${event.provider}"
-                                )
                             }
 
                             is MSightSimpleWarning -> {
@@ -242,6 +259,7 @@ fun MSightScreen(
 ) {
     val isActive = clientState is ClientState.Running || clientState is ClientState.Starting
 
+    // Config state lives here so it survives screen transitions
     var cloudUrl by remember { mutableStateOf("https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com") }
     var appId by remember { mutableStateOf("msight-demo") }
     var clientId by remember { mutableStateOf("client-001") }
@@ -250,6 +268,69 @@ fun MSightScreen(
     var deviceType by remember { mutableStateOf(MSightDeviceType.CELLPHONE) }
     var locationFreqHz by remember { mutableStateOf("1.0") }
 
+    if (isActive) {
+        ActiveMapScreen(
+            clientState = clientState,
+            latestLocation = latestLocation,
+            latestWarning = latestWarning,
+            warningVisible = warningVisible,
+            onStop = onStop,
+            onDismissWarning = onDismissWarning
+        )
+    } else {
+        ConfigScreen(
+            clientState = clientState,
+            cloudUrl = cloudUrl,
+            onCloudUrlChange = { cloudUrl = it },
+            appId = appId,
+            onAppIdChange = { appId = it },
+            clientId = clientId,
+            onClientIdChange = { clientId = it },
+            roadUserType = roadUserType,
+            onRoadUserTypeChange = { roadUserType = it },
+            roadUserSubType = roadUserSubType,
+            onRoadUserSubTypeChange = { roadUserSubType = it },
+            deviceType = deviceType,
+            onDeviceTypeChange = { deviceType = it },
+            locationFreqHz = locationFreqHz,
+            onLocationFreqHzChange = { locationFreqHz = it },
+            onStart = {
+                onStart(
+                    MSightClientConfig(
+                        cloudUrl = cloudUrl.trim(),
+                        appId = appId.trim(),
+                        clientId = clientId.trim(),
+                        roadUserType = roadUserType,
+                        roadUserSubType = roadUserSubType.trim(),
+                        deviceType = deviceType,
+                        locationUpdateFrequencyHz = locationFreqHz.toDoubleOrNull() ?: 1.0
+                    )
+                )
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfigScreen(
+    clientState: ClientState,
+    cloudUrl: String,
+    onCloudUrlChange: (String) -> Unit,
+    appId: String,
+    onAppIdChange: (String) -> Unit,
+    clientId: String,
+    onClientIdChange: (String) -> Unit,
+    roadUserType: MSightRoadUserType,
+    onRoadUserTypeChange: (MSightRoadUserType) -> Unit,
+    roadUserSubType: String,
+    onRoadUserSubTypeChange: (String) -> Unit,
+    deviceType: MSightDeviceType,
+    onDeviceTypeChange: (MSightDeviceType) -> Unit,
+    locationFreqHz: String,
+    onLocationFreqHzChange: (String) -> Unit,
+    onStart: () -> Unit
+) {
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -266,34 +347,29 @@ fun MSightScreen(
 
             StatusBadge(clientState)
 
-            LatestLocationCard(location = latestLocation)
-
             Spacer(modifier = Modifier.height(4.dp))
 
             OutlinedTextField(
                 value = cloudUrl,
-                onValueChange = { cloudUrl = it },
+                onValueChange = onCloudUrlChange,
                 label = { Text("Cloud URL") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isActive,
                 singleLine = true
             )
 
             OutlinedTextField(
                 value = appId,
-                onValueChange = { appId = it },
+                onValueChange = onAppIdChange,
                 label = { Text("App ID") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isActive,
                 singleLine = true
             )
 
             OutlinedTextField(
                 value = clientId,
-                onValueChange = { clientId = it },
+                onValueChange = onClientIdChange,
                 label = { Text("Client ID") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isActive,
                 singleLine = true
             )
 
@@ -301,17 +377,16 @@ fun MSightScreen(
                 label = "Road User Type",
                 options = MSightRoadUserType.entries,
                 selected = roadUserType,
-                onSelect = { roadUserType = it },
-                enabled = !isActive,
+                onSelect = onRoadUserTypeChange,
+                enabled = true,
                 displayName = { it.name }
             )
 
             OutlinedTextField(
                 value = roadUserSubType,
-                onValueChange = { roadUserSubType = it },
+                onValueChange = onRoadUserSubTypeChange,
                 label = { Text("Road User Sub-Type") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isActive,
                 singleLine = true
             )
 
@@ -319,68 +394,163 @@ fun MSightScreen(
                 label = "Device Type",
                 options = MSightDeviceType.entries,
                 selected = deviceType,
-                onSelect = { deviceType = it },
-                enabled = !isActive,
+                onSelect = onDeviceTypeChange,
+                enabled = true,
                 displayName = { it.name }
             )
 
             OutlinedTextField(
                 value = locationFreqHz,
-                onValueChange = { locationFreqHz = it },
+                onValueChange = onLocationFreqHzChange,
                 label = { Text("Location Frequency (Hz)") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isActive,
                 singleLine = true
             )
+
+            if (clientState is ClientState.Error) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEBEE)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Error: ${clientState.message}",
+                        color = Color(0xFFD32F2F),
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(4.dp))
 
             Button(
-                onClick = {
-                    if (isActive) {
-                        onStop()
-                    } else {
-                        onStart(
-                            MSightClientConfig(
-                                cloudUrl = cloudUrl.trim(),
-                                appId = appId.trim(),
-                                clientId = clientId.trim(),
-                                roadUserType = roadUserType,
-                                roadUserSubType = roadUserSubType.trim(),
-                                deviceType = deviceType,
-                                locationUpdateFrequencyHz = locationFreqHz.toDoubleOrNull() ?: 1.0
-                            )
-                        )
-                    }
-                },
+                onClick = onStart,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = when (clientState) {
-                        is ClientState.Running -> Color(0xFFD32F2F)
-                        is ClientState.Starting -> Color(0xFF616161)
-                        else -> Color(0xFF1976D2)
-                    }
-                ),
-                enabled = clientState !is ClientState.Starting
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
             ) {
                 Text(
-                    text = when (clientState) {
-                        is ClientState.Running -> "Stop Client"
-                        is ClientState.Starting -> "Starting..."
-                        else -> "Start Client"
-                    },
+                    text = "Start",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium
                 )
             }
 
-            // Extra bottom padding so warning banner doesn't permanently obscure content
             Spacer(modifier = Modifier.height(64.dp))
         }
+    }
+}
 
-        // Warning banner slides in from top over the scrollable content
+@Composable
+private fun ActiveMapScreen(
+    clientState: ClientState,
+    latestLocation: MSightLocationEvent?,
+    latestWarning: MSightSimpleWarning?,
+    warningVisible: Boolean,
+    onStop: () -> Unit,
+    onDismissWarning: () -> Unit
+) {
+    var infoPanelVisible by remember { mutableStateOf(false) }
+
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 5f)
+    }
+
+    var hasInitialLocation by remember { mutableStateOf(false) }
+    LaunchedEffect(latestLocation) {
+        latestLocation?.let { loc ->
+            val latLng = LatLng(loc.latitude, loc.longitude)
+            if (!hasInitialLocation) {
+                hasInitialLocation = true
+                cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(latLng, 20f))
+            } else {
+                cameraPositionState.animate(CameraUpdateFactory.newLatLng(latLng))
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        GoogleMap(
+            modifier = Modifier.fillMaxSize(),
+            cameraPositionState = cameraPositionState,
+            properties = MapProperties(
+                isMyLocationEnabled = true,
+                mapType = MapType.SATELLITE
+            ),
+            uiSettings = MapUiSettings(
+                myLocationButtonEnabled = false,
+                zoomControlsEnabled = false,
+                compassEnabled = true
+            )
+        )
+
+        // Top-right floating button: Info toggle only
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 12.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            FloatingActionButton(
+                onClick = { infoPanelVisible = !infoPanelVisible },
+                containerColor = if (infoPanelVisible) Color(0xFF1565C0) else Color(0xFF1976D2),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Info,
+                    contentDescription = "Info",
+                    tint = Color.White
+                )
+            }
+        }
+
+        // Bottom-center STOP button
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(bottom = 32.dp)
+        ) {
+            Button(
+                onClick = onStop,
+                modifier = Modifier
+                    .height(52.dp)
+                    .width(160.dp),
+                shape = RoundedCornerShape(26.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                elevation = ButtonDefaults.buttonElevation(
+                    defaultElevation = 8.dp,
+                    pressedElevation = 2.dp
+                )
+            ) {
+                Text(
+                    text = "STOP",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 3.sp
+                )
+            }
+        }
+
+        // Info panel slides in from the right
+        AnimatedVisibility(
+            visible = infoPanelVisible,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 118.dp, end = 8.dp, start = 56.dp),
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(tween(250)),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(tween(200))
+        ) {
+            InfoPanel(clientState = clientState, latestLocation = latestLocation)
+        }
+
+        // Warning banner slides in from top
         AnimatedVisibility(
             visible = warningVisible,
             modifier = Modifier
@@ -389,69 +559,78 @@ fun MSightScreen(
             enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(tween(300)),
             exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(tween(200))
         ) {
-            WarningBanner(
-                warning = latestWarning,
-                onDismiss = onDismissWarning
-            )
+            WarningBanner(warning = latestWarning, onDismiss = onDismissWarning)
         }
     }
 }
 
 @Composable
-private fun LatestLocationCard(location: MSightLocationEvent?) {
-    val clipboardManager = LocalClipboardManager.current
-
+private fun InfoPanel(
+    clientState: ClientState,
+    latestLocation: MSightLocationEvent?
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F8FF)),
-        shape = RoundedCornerShape(14.dp)
+        modifier = Modifier.width(260.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF2FFFFFF)),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Text(
+                text = "STATUS",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF546E7A)
+            )
+            StatusBadge(clientState)
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(
+                text = "LOCATION",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF546E7A)
+            )
+            if (latestLocation == null) {
                 Text(
-                    text = "Latest Location",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                TextButton(
-                    onClick = {
-                        val currentLocation = location ?: return@TextButton
-                        clipboardManager.setText(
-                            AnnotatedString(
-                                formatPythonLocationSnippet(currentLocation)
-                            )
-                        )
-                    },
-                    enabled = location != null
-                ) {
-                    Text("Copy")
-                }
-            }
-            if (location == null) {
-                Text(
-                    text = "No location update received yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF546E7A)
+                    text = "Awaiting first fix...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF78909C)
                 )
             } else {
-                val accuracyText = location.accuracyMeters
-                    ?.let { String.format(Locale.US, "%.1f m", it) }
-                    ?: "N/A"
-
-                Text("Latitude: ${formatCoordinate(location.latitude)}")
-                Text("Longitude: ${formatCoordinate(location.longitude)}")
-                Text("Provider: ${location.provider}")
-                Text("Accuracy: $accuracyText")
-                Text("Updated: ${formatWarningTimestamp(location.timestampMillis)}")
+                val accuracyText = latestLocation.accuracyMeters
+                    ?.let { String.format(Locale.US, "%.1f m", it) } ?: "N/A"
+                InfoRow("Lat", formatCoordinate(latestLocation.latitude))
+                InfoRow("Lon", formatCoordinate(latestLocation.longitude))
+                InfoRow("Provider", latestLocation.provider)
+                InfoRow("Accuracy", accuracyText)
+                InfoRow("Updated", formatTimestamp(latestLocation.timestampMillis))
             }
         }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF546E7A),
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF212121)
+        )
     }
 }
 
@@ -540,7 +719,7 @@ private fun WarningBanner(
                         color = Color(0xFF4E2800)
                     )
                     Text(
-                        text = formatWarningTimestamp(warning.timestampMillis),
+                        text = formatTimestamp(warning.timestampMillis),
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF795548)
                     )
@@ -600,15 +779,8 @@ private fun <T> EnumDropdown(
     }
 }
 
-private fun formatWarningTimestamp(timestampMillis: Long): String =
+private fun formatTimestamp(timestampMillis: Long): String =
     SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(timestampMillis))
 
 private fun formatCoordinate(value: Double): String =
     String.format(Locale.US, "%.6f", value)
-
-private fun formatPythonLocationSnippet(location: MSightLocationEvent): String {
-    return buildString {
-        appendLine("ORIGIN_LAT = ${formatCoordinate(location.latitude)}")
-        append("ORIGIN_LON = ${formatCoordinate(location.longitude)}")
-    }
-}

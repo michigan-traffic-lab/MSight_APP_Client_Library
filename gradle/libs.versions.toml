@@ -11,6 +11,8 @@ espressoCore = "3.5.1"
 lifecycleRuntimeKtx = "2.6.1"
 composeBom = "2024.04.01"
 playServicesLocation = "21.3.0"
+playServicesMaps = "19.0.0"
+mapsCompose = "4.3.3"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -30,6 +32,9 @@ androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "playServicesLocation" }
+play-services-maps = { module = "com.google.android.gms:play-services-maps", version.ref = "playServicesMaps" }
+maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "mapsCompose" }
+androidx-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
