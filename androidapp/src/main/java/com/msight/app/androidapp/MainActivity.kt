@@ -23,6 +23,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +44,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.border
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -56,6 +58,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -603,14 +606,20 @@ private fun ActiveMapScreen(
             InfoPanel(clientState = clientState, latestLocation = latestLocation)
         }
 
-        // Warning banner slides in from top
+        // Warning banner drops in from top with spring bounce
         AnimatedVisibility(
             visible = warningVisible,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 12.dp, start = 12.dp, end = 12.dp),
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(tween(300)),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(tween(200))
+            enter = slideInVertically(
+                animationSpec = spring(dampingRatio = 0.6f, stiffness = 600f),
+                initialOffsetY = { -it }
+            ) + fadeIn(tween(180)),
+            exit = slideOutVertically(
+                animationSpec = tween(200, easing = LinearEasing),
+                targetOffsetY = { -it }
+            ) + fadeOut(tween(180))
         ) {
             WarningBanner(warning = latestWarning, onDismiss = onDismissWarning)
         }
@@ -728,58 +737,123 @@ private fun WarningBanner(
     onDismiss: () -> Unit
 ) {
     val transition = rememberInfiniteTransition(label = "warning")
-    val pulseAlpha by transition.animateFloat(
-        initialValue = 0.5f,
+
+    val glowAlpha by transition.animateFloat(
+        initialValue = 0.45f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(450, easing = LinearEasing),
+            animation = tween(380, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "pulse"
+        label = "glow"
+    )
+    val iconPulse by transition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(420, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "icon"
     )
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+    var progress by remember(warning) { mutableStateOf(1f) }
+    LaunchedEffect(warning) {
+        val steps = 60
+        val stepDelay = WARNING_AUTO_DISMISS_MILLIS / steps
+        for (i in 1..steps) {
+            delay(stepDelay)
+            progress = 1f - i / steps.toFloat()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF1A0006))
+            .border(2.dp, Color(0xFFFF1744).copy(alpha = glowAlpha), RoundedCornerShape(20.dp))
     ) {
-        Row(
+        // Pulsing red tint overlay
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
+                .matchParentSize()
+                .background(Color(0xFFFF1744).copy(alpha = glowAlpha * 0.055f))
+        )
+        Column {
+            Row(
                 modifier = Modifier
-                    .size(14.dp)
-                    .alpha(pulseAlpha)
-                    .clip(CircleShape)
-                    .background(Color(0xFFE65100))
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "WARNING RECEIVED",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFFE65100)
-                )
-                if (warning != null) {
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 4.dp, top = 18.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Warning icon with pulsing halo
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFF1744).copy(alpha = glowAlpha * 0.22f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = "Warning",
+                        tint = Color(0xFFFFD600).copy(alpha = iconPulse),
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Text(
-                        text = warning.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF4E2800)
+                        text = "⚠  DRIVER ALERT",
+                        color = Color(0xFFFF5252),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 3.sp
                     )
                     Text(
-                        text = formatTimestamp(warning.timestampMillis),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF795548)
+                        text = warning?.message ?: "",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        lineHeight = 22.sp
+                    )
+                    if (warning != null) {
+                        Text(
+                            text = formatTimestamp(warning.timestampMillis),
+                            color = Color.White.copy(alpha = 0.38f),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+
+                TextButton(onClick = onDismiss) {
+                    Text(
+                        text = "✕",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
-            TextButton(onClick = onDismiss) {
-                Text("Dismiss", color = Color(0xFFE65100), fontWeight = FontWeight.Bold)
+
+            // Countdown drain bar: full → empty over WARNING_AUTO_DISMISS_MILLIS
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(Color.White.copy(alpha = 0.07f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress)
+                        .fillMaxSize()
+                        .background(Color(0xFFFF1744).copy(alpha = 0.88f))
+                )
             }
         }
     }
