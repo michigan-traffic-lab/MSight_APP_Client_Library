@@ -24,6 +24,22 @@ data class MSightSimpleWarning(
     val message: String
 ) : MSightWarningEvent(timestampMillis)
 
+data class MSightSdsmEvent(
+    override val timestampMillis: Long,
+    val sensorName: String,
+    val deviceName: String,
+    val captureTimestamp: Double,
+    val creationTimestamp: Double,
+    val frameId: String,
+    val msgCnt: Int,
+    val sourceId: String,
+    val equipmentType: String?,
+    val sdsmTimestamp: SdsmTimestamp?,
+    val refPos: SdsmRefPos,
+    val refPosXYConf: SdsmRefPosConf?,
+    val objects: List<SdsmDetectedObject>
+) : MSightEvent(timestampMillis)
+
 sealed class MSightConflictWarningEvent(
     override val timestampMillis: Long,
     open val ttcSeconds: Double?,

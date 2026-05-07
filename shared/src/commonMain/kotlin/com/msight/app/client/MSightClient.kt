@@ -29,6 +29,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.roundToLong
 
 enum class MSightRoadUserType {
@@ -407,8 +416,18 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     }
 
     val payloadJson = extractJsonObjectField(rawMessage, "message") ?: rawMessage
-    val messageType = extractJsonStringField(payloadJson, "message_type") ?: return null
 
+    // New message format: "type" field (used by SDSM and future message types)
+    val type = extractJsonStringField(payloadJson, "type")
+    if (type != null) {
+        return when (type) {
+            SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson)
+            else -> null
+        }
+    }
+
+    // Legacy message format: "message_type" field
+    val messageType = extractJsonStringField(payloadJson, "message_type") ?: return null
     return when (messageType) {
         SIMPLE_WARNING_MESSAGE_TYPE -> parseSimpleWarningEvent(
             envelopeJson = rawMessage,
@@ -582,3 +601,98 @@ private const val WEBSOCKET_URL_PATH = "/system/websocket-url"
 private const val INITIAL_RECONNECT_DELAY_MILLIS = 1_000L
 private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
 private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
+private const val SDSM_MESSAGE_TYPE = "sdsm"
+
+private val lenientJson = Json { ignoreUnknownKeys = true }
+
+private fun parseSdsmEvent(messageJson: String): MSightSdsmEvent? {
+    return try {
+        val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
+        val sdsmObj = msg["sdsm"]?.jsonObject ?: return null
+
+        val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val timestampMillis = (captureTimestamp * 1000.0).roundToLong()
+
+        val sdsmTimestamp = sdsmObj["sDSMTimeStamp"]?.jsonObject?.let { ts ->
+            SdsmTimestamp(
+                year = ts["year"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                month = ts["month"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                day = ts["day"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                hour = ts["hour"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                minute = ts["minute"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                second = ts["second"]?.jsonPrimitive?.doubleOrNull ?: return@let null,
+                offset = ts["offset"]?.jsonPrimitive?.intOrNull ?: 0
+            )
+        }
+
+        val refPos = lenientJson.decodeFromJsonElement<SdsmRefPos>(
+            sdsmObj["refPos"] ?: return null
+        )
+        val refPosXYConf = sdsmObj["refPosXYConf"]?.let {
+            lenientJson.decodeFromJsonElement<SdsmRefPosConf>(it)
+        }
+        val objects = sdsmObj["objects"]?.jsonArray
+            ?.mapNotNull { parseDetectedObject(it.jsonObject) }
+            ?: emptyList()
+
+        MSightSdsmEvent(
+            timestampMillis = timestampMillis,
+            sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            captureTimestamp = captureTimestamp,
+            creationTimestamp = msg["creation_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null,
+            frameId = msg["frame_id"]?.jsonPrimitive?.content ?: return null,
+            msgCnt = sdsmObj["msgCnt"]?.jsonPrimitive?.intOrNull ?: 0,
+            sourceId = sdsmObj["sourceID"]?.jsonPrimitive?.contentOrNull ?: "",
+            equipmentType = sdsmObj["equipmentType"]?.jsonPrimitive?.contentOrNull,
+            sdsmTimestamp = sdsmTimestamp,
+            refPos = refPos,
+            refPosXYConf = refPosXYConf,
+            objects = objects
+        )
+    } catch (e: Exception) {
+        logError("parseSdsmEvent failed: ${describeThrowable(e)}")
+        null
+    }
+}
+
+private fun parseDetectedObject(entry: JsonObject): SdsmDetectedObject? {
+    return try {
+        val common = entry["detObjCommon"]?.jsonObject ?: return null
+        val pos = lenientJson.decodeFromJsonElement<SdsmOffset>(common["pos"] ?: return null)
+        val posConf = lenientJson.decodeFromJsonElement<SdsmPosConfidence>(
+            common["posConfidence"] ?: return null
+        )
+
+        var vehicleSize: SdsmVehicleSize? = null
+        var vehicleClass: Int? = null
+        val optData = entry["detObjOptData"]?.jsonArray
+        if (optData != null && optData.size >= 2) {
+            if (optData[0].jsonPrimitive.contentOrNull == "detVeh") {
+                val vehObj = optData[1].jsonObject
+                vehicleClass = vehObj["vehicleClass"]?.jsonPrimitive?.intOrNull
+                vehicleSize = vehObj["size"]?.let {
+                    lenientJson.decodeFromJsonElement<SdsmVehicleSize>(it)
+                }
+            }
+        }
+
+        SdsmDetectedObject(
+            objectType = common["objType"]?.jsonPrimitive?.contentOrNull ?: "unknown",
+            objTypeCfd = common["objTypeCfd"]?.jsonPrimitive?.intOrNull ?: 0,
+            objectID = common["objectID"]?.jsonPrimitive?.intOrNull ?: 0,
+            measurementTime = common["measurementTime"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            timeConfidence = common["timeConfidence"]?.jsonPrimitive?.contentOrNull ?: "",
+            pos = pos,
+            posConfidence = posConf,
+            speed = common["speed"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            speedConfidence = common["speedConfidence"]?.jsonPrimitive?.contentOrNull ?: "",
+            heading = common["heading"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            headingConf = common["headingConf"]?.jsonPrimitive?.contentOrNull ?: "",
+            vehicleSize = vehicleSize,
+            vehicleClass = vehicleClass
+        )
+    } catch (e: Exception) {
+        null
+    }
+}

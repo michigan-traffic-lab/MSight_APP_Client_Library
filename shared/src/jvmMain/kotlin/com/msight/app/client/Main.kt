@@ -95,6 +95,21 @@ private fun printEvent(event: MSightEvent) {
         is MSightSimpleWarning -> println(
             "Received MSightSimpleWarning: timestampMillis=${event.timestampMillis}, message=${event.message}"
         )
+        is MSightSdsmEvent -> {
+            println(
+                "Received MSightSdsmEvent: sensor=${event.sensorName} device=${event.deviceName} " +
+                "frameId=${event.frameId} msgCnt=${event.msgCnt} objects=${event.objects.size} " +
+                "captureTimestamp=${event.captureTimestamp}"
+            )
+            event.objects.forEach { obj ->
+                val sizeStr = obj.vehicleSize?.let { " size=${it.width}x${it.length}m" } ?: ""
+                println(
+                    "  Object #${obj.objectID} type=${obj.objectType} " +
+                    "offsetX=${obj.pos.offsetX} offsetY=${obj.pos.offsetY} " +
+                    "speed=${obj.speed} heading=${obj.heading}$sizeStr"
+                )
+            }
+        }
         else -> println("Received event: $event")
     }
 }

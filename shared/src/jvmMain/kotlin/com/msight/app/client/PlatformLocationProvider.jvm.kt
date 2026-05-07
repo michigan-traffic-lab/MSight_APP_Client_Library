@@ -23,8 +23,8 @@ actual class PlatformLocationProvider actual constructor(
         }
 
         locationJob = scope.launch {
-            var latitude = 42.2808
-            var longitude = -83.7430
+            var latitude = 42.302615
+            var longitude = -83.704366
 
             while (isActive) {
                 // println(
