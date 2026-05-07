@@ -1,6 +1,10 @@
 package com.msight.app.androidapp
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -67,6 +71,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -81,12 +86,17 @@ import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapType
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.rememberCameraPositionState
+import com.google.android.gms.maps.model.BitmapDescriptor
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerState
 import com.msight.app.androidapp.ui.theme.MsightappclientlibraryTheme
 import com.msight.app.client.MSightClient
 import com.msight.app.client.MSightClientConfig
 import com.msight.app.client.MSightDeviceType
 import com.msight.app.client.MSightLocationEvent
 import com.msight.app.client.MSightRoadUserType
+import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -95,6 +105,10 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
@@ -112,6 +126,7 @@ class MainActivity : ComponentActivity() {
     private var latestLocation by mutableStateOf<MSightLocationEvent?>(null)
     private var latestWarning by mutableStateOf<MSightSimpleWarning?>(null)
     private var warningVisible by mutableStateOf(false)
+    private var latestSdsmEvent by mutableStateOf<MSightSdsmEvent?>(null)
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -140,6 +155,7 @@ class MainActivity : ComponentActivity() {
                         latestLocation = latestLocation,
                         latestWarning = latestWarning,
                         warningVisible = warningVisible,
+                        latestSdsmEvent = latestSdsmEvent,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
                         onDismissWarning = { warningVisible = false }
@@ -194,6 +210,16 @@ class MainActivity : ComponentActivity() {
 
                             is MSightSimpleWarning -> {
                                 showWarning(event)
+                            }
+
+                            is MSightSdsmEvent -> {
+                                latestSdsmEvent = event
+                                Log.d(
+                                    "MSight-SDSM",
+                                    "SDSM sensor=${event.sensorName} frameId=${event.frameId} " +
+                                    "msgCnt=${event.msgCnt} objects=${event.objects.size} " +
+                                    "refPos=(${event.refPos.lat},${event.refPos.long})"
+                                )
                             }
 
                             else -> Unit
@@ -253,6 +279,7 @@ fun MSightScreen(
     latestLocation: MSightLocationEvent?,
     latestWarning: MSightSimpleWarning?,
     warningVisible: Boolean,
+    latestSdsmEvent: MSightSdsmEvent?,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
@@ -274,6 +301,7 @@ fun MSightScreen(
             latestLocation = latestLocation,
             latestWarning = latestWarning,
             warningVisible = warningVisible,
+            latestSdsmEvent = latestSdsmEvent,
             onStop = onStop,
             onDismissWarning = onDismissWarning
         )
@@ -449,10 +477,12 @@ private fun ActiveMapScreen(
     latestLocation: MSightLocationEvent?,
     latestWarning: MSightSimpleWarning?,
     warningVisible: Boolean,
+    latestSdsmEvent: MSightSdsmEvent?,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
+    val markerCache = remember { HashMap<String, BitmapDescriptor>() }
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 5f)
@@ -484,7 +514,30 @@ private fun ActiveMapScreen(
                 zoomControlsEnabled = false,
                 compassEnabled = true
             )
-        )
+        ) {
+            latestSdsmEvent?.let { event ->
+                event.objects.forEach { obj ->
+                    val (lat, lon) = computeObjectLatLon(
+                        event.refPos.lat, event.refPos.long,
+                        obj.pos.offsetX, obj.pos.offsetY
+                    )
+                    val headingBucket = (obj.heading / 10.0).toInt() * 10.0
+                    val cacheKey = "${obj.objectType}_$headingBucket"
+                    val markerIcon = markerCache.getOrPut(cacheKey) {
+                        BitmapDescriptorFactory.fromBitmap(
+                            createObjectMarkerBitmap(obj.objectType, headingBucket)
+                        )
+                    }
+                    Marker(
+                        state = MarkerState(position = LatLng(lat, lon)),
+                        icon = markerIcon,
+                        anchor = Offset(0.5f, 0.5f),
+                        title = "${obj.objectType} #${obj.objectID}",
+                        snippet = "spd=${obj.speed} hdg=${String.format(Locale.US, "%.1f", obj.heading)}°"
+                    )
+                }
+            }
+        }
 
         // Top-right floating button: Info toggle only
         Column(
@@ -784,3 +837,82 @@ private fun formatTimestamp(timestampMillis: Long): String =
 
 private fun formatCoordinate(value: Double): String =
     String.format(Locale.US, "%.6f", value)
+
+/**
+ * Mirrors the JS geolib logic:
+ *  Step 1 – move offsetX metres northward  (bearing = 0°)
+ *  Step 2 – move offsetY metres eastward   (bearing = 90°)
+ */
+private fun computeObjectLatLon(
+    refLat: Double, refLon: Double,
+    offsetX: Double, offsetY: Double
+): Pair<Double, Double> {
+    val R = 6_371_000.0
+
+    // Step 1: offsetX northward (bearing = 0°  →  only latitude changes)
+    val d1 = offsetX / R
+    val φ1 = Math.toRadians(refLat)
+    val λ1 = Math.toRadians(refLon)
+    val φ2 = asin(sin(φ1) * cos(d1) + cos(φ1) * sin(d1))
+    // λ unchanged for due-north movement
+
+    // Step 2: offsetY eastward (bearing = 90°  →  cos(90°)=0, sin(90°)=1)
+    val d2 = offsetY / R
+    val sinφ3 = sin(φ2) * cos(d2)   // cos(90°) term vanishes
+    val φ3 = asin(sinφ3)
+    val λ3 = λ1 + atan2(sin(d2) * cos(φ2), cos(d2) - sin(φ2) * sinφ3)
+
+    return Pair(Math.toDegrees(φ3), Math.toDegrees(λ3))
+}
+
+private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
+    val size = 64
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val cx = size / 2f
+    val cy = size / 2f
+    val radius = size * 0.36f
+
+    // Filled circle — colour by type
+    paint.color = when (objectType.lowercase()) {
+        "vehicle" -> 0xFF1565C0.toInt()
+        "vru"     -> 0xFF2E7D32.toInt()
+        "animal"  -> 0xFFF9A825.toInt()
+        else      -> 0xFFC62828.toInt()
+    }
+    paint.style = Paint.Style.FILL
+    canvas.drawCircle(cx, cy, radius, paint)
+
+    // White border
+    paint.color = 0xFFFFFFFF.toInt()
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 3f
+    canvas.drawCircle(cx, cy, radius, paint)
+
+    // White direction arrow pointing in heading direction (0° = north)
+    paint.style = Paint.Style.FILL
+    val headingRad = Math.toRadians(heading)
+    val tipDist = radius * 0.72f
+    val tipX = cx + (tipDist * sin(headingRad)).toFloat()
+    val tipY = cy - (tipDist * cos(headingRad)).toFloat()
+    val baseDist = radius * 0.25f
+    val baseX = cx - (baseDist * sin(headingRad)).toFloat()
+    val baseY = cy + (baseDist * cos(headingRad)).toFloat()
+    val halfBase = radius * 0.28f
+    val perpRad = headingRad + Math.PI / 2
+    val path = Path()
+    path.moveTo(tipX, tipY)
+    path.lineTo(
+        baseX + (halfBase * sin(perpRad)).toFloat(),
+        baseY - (halfBase * cos(perpRad)).toFloat()
+    )
+    path.lineTo(
+        baseX - (halfBase * sin(perpRad)).toFloat(),
+        baseY + (halfBase * cos(perpRad)).toFloat()
+    )
+    path.close()
+    canvas.drawPath(path, paint)
+
+    return bitmap
+}
