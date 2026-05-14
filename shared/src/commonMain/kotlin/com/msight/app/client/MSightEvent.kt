@@ -43,6 +43,24 @@ data class MSightSdsmEvent(
     val objects: List<SdsmDetectedObject>
 ) : MSightEvent(timestampMillis)
 
+data class MSightSpatEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    val sensorName: String,
+    val deviceName: String,
+    val captureTimestamp: Double,
+    val creationTimestamp: Double,
+    val frameId: String,
+    /** Optional human-readable intersection name (from message-level field). */
+    val intersectionName: String?,
+    /** Message count (0–127, wraps). */
+    val msgCnt: Int,
+    /** Optional name from inside the spat object. */
+    val name: String?,
+    /** The single intersection carried in this SPAT message. */
+    val intersection: SpatIntersection
+) : MSightEvent(timestampMillis)
+
 sealed class MSightConflictWarningEvent(
     override val timestampMillis: Long,
     open val ttcSeconds: Double?,

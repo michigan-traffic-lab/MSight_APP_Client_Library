@@ -69,7 +69,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -104,6 +107,8 @@ import com.msight.app.client.MSightLocationEvent
 import com.msight.app.client.MSightRoadUserType
 import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
+import com.msight.app.client.MSightSpatEvent
+import com.msight.app.client.SdsmDetectedObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -118,6 +123,12 @@ import kotlin.math.sin
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
+
+enum class SdsmFilter(val label: String) {
+    ALL("All"),
+    DERQ("DeRQ"),
+    OUSTER("Ouster")
+}
 
 sealed class ClientState {
     object Idle : ClientState()
@@ -232,15 +243,25 @@ class MainActivity : ComponentActivity() {
 
                             is MSightSdsmEvent -> {
                                 latestSdsmEvent = event
-                                Log.d(
-                                    "MSight-SDSM",
-                                    "SDSM sensor=${event.sensorName} frameId=${event.frameId} " +
-                                    "msgCnt=${event.msgCnt} objects=${event.objects.size} " +
-                                    "refPos=(${event.refPos.lat},${event.refPos.long})"
-                                )
                             }
 
-                            else -> Unit
+                            is MSightSpatEvent -> {
+                                val ix = event.intersection
+                                Log.d("MSight-SPAT",
+                                    "SPAT sensor=${event.sensorName} name=${event.intersectionName} " +
+                                    "intId=${ix.id.id} revision=${ix.revision} " +
+                                    "moy=${ix.moy} ts=${ix.timeStamp} signals=${ix.states.size}")
+                                ix.states.forEach { state ->
+                                    val sts = state.stateTimeSpeed.firstOrNull()
+                                    Log.d("MSight-SPAT",
+                                        "  sg=${state.signalGroup} state=${sts?.eventState} " +
+                                        "minEnd=${sts?.timing?.minEndTime} maxEnd=${sts?.timing?.maxEndTime}")
+                                }
+                            }
+
+                            else -> {
+                                Log.d("MSight", "Received event: $event")
+                            }
                         }
                     }
                 }
@@ -544,6 +565,7 @@ private fun ActiveMapScreen(
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
+    var sdsmFilter by remember { mutableStateOf(SdsmFilter.ALL) }
     val markerCache = remember { HashMap<String, BitmapDescriptor>() }
 
     val cameraPositionState = rememberCameraPositionState {
@@ -551,6 +573,35 @@ private fun ActiveMapScreen(
     }
 
     var hasInitialLocation by remember { mutableStateOf(false) }
+
+    // Stable map: objectID -> (LatLng, SdsmDetectedObject) — updated in-place to avoid marker flash
+    val objectPositions = remember { mutableStateMapOf<Int, Pair<LatLng, SdsmDetectedObject>>() }
+    LaunchedEffect(latestSdsmEvent, sdsmFilter) {
+        val event = latestSdsmEvent
+        if (event == null) {
+            objectPositions.clear()
+            return@LaunchedEffect
+        }
+        val showEvent = when (sdsmFilter) {
+            SdsmFilter.ALL -> true
+            SdsmFilter.DERQ -> event.sensorName.startsWith("derq", ignoreCase = true)
+            SdsmFilter.OUSTER -> event.sensorName.startsWith("ouster", ignoreCase = true)
+        }
+        if (!showEvent) {
+            objectPositions.clear()
+            return@LaunchedEffect
+        }
+        val newIds = event.objects.map { it.objectID }.toSet()
+        objectPositions.keys.retainAll(newIds)
+        event.objects.forEach { obj ->
+            val (lat, lon) = computeObjectLatLon(
+                event.refPos.lat, event.refPos.long,
+                obj.pos.offsetX, obj.pos.offsetY
+            )
+            objectPositions[obj.objectID] = LatLng(lat, lon) to obj
+        }
+    }
+
     LaunchedEffect(latestLocation) {
         latestLocation?.let { loc ->
             val latLng = LatLng(loc.latitude, loc.longitude)
@@ -577,25 +628,25 @@ private fun ActiveMapScreen(
                 compassEnabled = true
             )
         ) {
-            latestSdsmEvent?.let { event ->
-                event.objects.forEach { obj ->
-                    val (lat, lon) = computeObjectLatLon(
-                        event.refPos.lat, event.refPos.long,
-                        obj.pos.offsetX, obj.pos.offsetY
-                    )
-                    val headingBucket = (obj.heading / 10.0).toInt() * 10.0
-                    val cacheKey = "${obj.objectType}_$headingBucket"
+            objectPositions.forEach { (id, pair) ->
+                val entryLatLng: LatLng = pair.first
+                val entryObj: SdsmDetectedObject = pair.second
+                key(id) {
+                    val markerState = remember { MarkerState(position = entryLatLng) }
+                    SideEffect { markerState.position = entryLatLng }
+                    val headingBucket = (entryObj.heading / 10.0).toInt() * 10.0
+                    val cacheKey = "${entryObj.objectType}_$headingBucket"
                     val markerIcon = markerCache.getOrPut(cacheKey) {
                         BitmapDescriptorFactory.fromBitmap(
-                            createObjectMarkerBitmap(obj.objectType, headingBucket)
+                            createObjectMarkerBitmap(entryObj.objectType, headingBucket)
                         )
                     }
                     Marker(
-                        state = MarkerState(position = LatLng(lat, lon)),
+                        state = markerState,
                         icon = markerIcon,
                         anchor = Offset(0.5f, 0.5f),
-                        title = "${obj.objectType} #${obj.objectID}",
-                        snippet = "spd=${obj.speed} hdg=${String.format(Locale.US, "%.1f", obj.heading)}°"
+                        title = "${entryObj.objectType} #${entryObj.objectID}",
+                        snippet = "spd=${entryObj.speed} hdg=${String.format(Locale.US, "%.1f", entryObj.heading)}°"
                     )
                 }
             }
@@ -619,6 +670,29 @@ private fun ActiveMapScreen(
                     imageVector = Icons.Filled.Info,
                     contentDescription = "Info",
                     tint = Color.White
+                )
+            }
+            // SDSM filter cycle button
+            FloatingActionButton(
+                onClick = {
+                    sdsmFilter = when (sdsmFilter) {
+                        SdsmFilter.ALL -> SdsmFilter.DERQ
+                        SdsmFilter.DERQ -> SdsmFilter.OUSTER
+                        SdsmFilter.OUSTER -> SdsmFilter.ALL
+                    }
+                },
+                containerColor = when (sdsmFilter) {
+                    SdsmFilter.ALL -> Color(0xFF388E3C)
+                    SdsmFilter.DERQ -> Color(0xFF0277BD)
+                    SdsmFilter.OUSTER -> Color(0xFFE65100)
+                },
+                modifier = Modifier.size(48.dp)
+            ) {
+                Text(
+                    text = sdsmFilter.label,
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }

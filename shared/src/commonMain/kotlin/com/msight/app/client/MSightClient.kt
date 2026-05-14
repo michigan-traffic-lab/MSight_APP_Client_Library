@@ -423,6 +423,7 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     if (type != null) {
         return when (type) {
             SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson, eventId)
+            SPAT_MESSAGE_TYPE -> parseSpatEvent(payloadJson, eventId)
             else -> null
         }
     }
@@ -606,6 +607,7 @@ private const val INITIAL_RECONNECT_DELAY_MILLIS = 1_000L
 private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
 private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
+private const val SPAT_MESSAGE_TYPE = "spat"
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -657,6 +659,89 @@ private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSight
         )
     } catch (e: Exception) {
         logError("parseSdsmEvent failed: ${describeThrowable(e)}")
+        null
+    }
+}
+
+private fun parseSpatEvent(messageJson: String, eventId: String? = null): MSightSpatEvent? {
+    return try {
+        val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
+        val spatObj = msg["spat"]?.jsonObject ?: return null
+
+        val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val timestampMillis = (captureTimestamp * 1000.0).roundToLong()
+
+        val intersection = parseSpatIntersection(spatObj) ?: return null
+
+        MSightSpatEvent(
+            timestampMillis = timestampMillis,
+            eventId = eventId,
+            sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            captureTimestamp = captureTimestamp,
+            creationTimestamp = msg["creation_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null,
+            frameId = msg["frame_id"]?.jsonPrimitive?.contentOrNull ?: "",
+            intersectionName = msg["intersection_name"]?.jsonPrimitive?.contentOrNull,
+            msgCnt = spatObj["msgCnt"]?.jsonPrimitive?.intOrNull ?: 0,
+            name = spatObj["name"]?.jsonPrimitive?.contentOrNull,
+            intersection = intersection
+        )
+    } catch (e: Exception) {
+        logError("parseSpatEvent failed: ${describeThrowable(e)}")
+        null
+    }
+}
+
+private fun parseSpatIntersection(obj: JsonObject): SpatIntersection? {
+    return try {
+        val idObj = obj["id"]?.jsonObject ?: return null
+        val intersectionId = SpatIntersectionId(
+            id = idObj["id"]?.jsonPrimitive?.intOrNull ?: return null,
+            region = idObj["region"]?.jsonPrimitive?.intOrNull
+        )
+        val status = obj["status"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.intOrNull }
+            ?: emptyList()
+        val states = obj["states"]?.jsonArray
+            ?.mapNotNull { parseSpatMovementState(it.jsonObject) }
+            ?: emptyList()
+
+        SpatIntersection(
+            id = intersectionId,
+            revision = obj["revision"]?.jsonPrimitive?.intOrNull ?: 0,
+            status = status,
+            moy = obj["moy"]?.jsonPrimitive?.intOrNull,
+            timeStamp = obj["timeStamp"]?.jsonPrimitive?.intOrNull,
+            states = states
+        )
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun parseSpatMovementState(obj: JsonObject): SpatMovementState? {
+    return try {
+        val signalGroup = obj["signalGroup"]?.jsonPrimitive?.intOrNull ?: return null
+        val stateTimeSpeed = obj["state-time-speed"]?.jsonArray
+            ?.mapNotNull { entry ->
+                val sts = entry.jsonObject
+                val eventState = sts["eventState"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val timing = sts["timing"]?.jsonObject?.let { t ->
+                    SpatTiming(
+                        startTime = t["startTime"]?.jsonPrimitive?.intOrNull,
+                        minEndTime = t["minEndTime"]?.jsonPrimitive?.intOrNull ?: return@let null,
+                        maxEndTime = t["maxEndTime"]?.jsonPrimitive?.intOrNull,
+                        likelyTime = t["likelyTime"]?.jsonPrimitive?.intOrNull,
+                        confidence = t["confidence"]?.jsonPrimitive?.intOrNull,
+                        nextTime = t["nextTime"]?.jsonPrimitive?.intOrNull
+                    )
+                }
+                SpatStateTimeSpeed(eventState = eventState, timing = timing)
+            }
+            ?: emptyList()
+
+        SpatMovementState(signalGroup = signalGroup, stateTimeSpeed = stateTimeSpeed)
+    } catch (e: Exception) {
         null
     }
 }
