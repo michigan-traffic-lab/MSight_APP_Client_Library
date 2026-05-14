@@ -416,12 +416,13 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     }
 
     val payloadJson = extractJsonObjectField(rawMessage, "message") ?: rawMessage
+    val eventId = extractJsonStringField(rawMessage, "event_id")
 
     // New message format: "type" field (used by SDSM and future message types)
     val type = extractJsonStringField(payloadJson, "type")
     if (type != null) {
         return when (type) {
-            SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson)
+            SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson, eventId)
             else -> null
         }
     }
@@ -431,7 +432,8 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     return when (messageType) {
         SIMPLE_WARNING_MESSAGE_TYPE -> parseSimpleWarningEvent(
             envelopeJson = rawMessage,
-            payloadJson = payloadJson
+            payloadJson = payloadJson,
+            eventId = eventId
         )
         else -> null
     }
@@ -439,7 +441,8 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
 
 private fun parseSimpleWarningEvent(
     envelopeJson: String,
-    payloadJson: String
+    payloadJson: String,
+    eventId: String? = null
 ): MSightSimpleWarning? {
     val message = extractJsonStringField(payloadJson, "message") ?: return null
     val timestampIsoString = extractJsonStringField(payloadJson, "timestamp")
@@ -451,6 +454,7 @@ private fun parseSimpleWarningEvent(
 
     return MSightSimpleWarning(
         timestampMillis = timestampMillis,
+        eventId = eventId,
         message = message
     )
 }
@@ -605,7 +609,7 @@ private const val SDSM_MESSAGE_TYPE = "sdsm"
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
-private fun parseSdsmEvent(messageJson: String): MSightSdsmEvent? {
+private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSightSdsmEvent? {
     return try {
         val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
         val sdsmObj = msg["sdsm"]?.jsonObject ?: return null
@@ -637,6 +641,7 @@ private fun parseSdsmEvent(messageJson: String): MSightSdsmEvent? {
 
         MSightSdsmEvent(
             timestampMillis = timestampMillis,
+            eventId = eventId,
             sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: return null,
             deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: return null,
             captureTimestamp = captureTimestamp,

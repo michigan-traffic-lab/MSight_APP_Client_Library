@@ -1,7 +1,8 @@
 package com.msight.app.client
 
 sealed class MSightEvent(
-    open val timestampMillis: Long
+    open val timestampMillis: Long,
+    open val eventId: String? = null
 )
 
 data class MSightLocationEvent(
@@ -21,11 +22,13 @@ sealed class MSightWarningEvent(
 
 data class MSightSimpleWarning(
     override val timestampMillis: Long,
+    override val eventId: String? = null,
     val message: String
 ) : MSightWarningEvent(timestampMillis)
 
 data class MSightSdsmEvent(
     override val timestampMillis: Long,
+    override val eventId: String? = null,
     val sensorName: String,
     val deviceName: String,
     val captureTimestamp: Double,
@@ -48,6 +51,7 @@ sealed class MSightConflictWarningEvent(
 
 data class MSightTwoVehicleConflictEvent(
     override val timestampMillis: Long,
+    override val eventId: String? = null,
     override val ttcSeconds: Double?,
     override val pretSeconds: Double?,
     val firstVehicleTrajectory: MSightTrajectory,
@@ -62,6 +66,7 @@ data class MSightTwoVehicleConflictEvent(
 
 data class MSightVehicleVRUConflictEvent(
     override val timestampMillis: Long,
+    override val eventId: String? = null,
     override val ttcSeconds: Double?,
     override val pretSeconds: Double?,
     val vehicleTrajectory: MSightTrajectory,

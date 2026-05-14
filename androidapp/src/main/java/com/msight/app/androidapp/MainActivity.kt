@@ -5,12 +5,15 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -129,11 +132,14 @@ class MainActivity : ComponentActivity() {
     private var latestLocation by mutableStateOf<MSightLocationEvent?>(null)
     private var latestWarning by mutableStateOf<MSightSimpleWarning?>(null)
     private var warningVisible by mutableStateOf(false)
+    private var warningResetKey by mutableStateOf(0)
     private var latestSdsmEvent by mutableStateOf<MSightSdsmEvent?>(null)
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
     private var warningDisplayJob: Job? = null
+    private var currentWarningEventId: String? = null
+    private var warningPlayer: MediaPlayer? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -158,10 +164,17 @@ class MainActivity : ComponentActivity() {
                         latestLocation = latestLocation,
                         latestWarning = latestWarning,
                         warningVisible = warningVisible,
+                        warningResetKey = warningResetKey,
                         latestSdsmEvent = latestSdsmEvent,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
-                        onDismissWarning = { warningVisible = false }
+                        onDismissWarning = {
+                            warningVisible = false
+                            currentWarningEventId = null
+                            warningDisplayJob?.cancel()
+                            warningDisplayJob = null
+                            stopWarningSound()
+                        }
                     )
                 }
             }
@@ -170,6 +183,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         lifecycleScope.launch(Dispatchers.IO) { activeClient?.close() }
+        warningPlayer?.release()
+        warningPlayer = null
         super.onDestroy()
     }
 
@@ -249,6 +264,8 @@ class MainActivity : ComponentActivity() {
             } finally {
                 warningDisplayJob?.cancel()
                 warningDisplayJob = null
+                currentWarningEventId = null
+                stopWarningSound()
                 activeClient = null
                 clientState = ClientState.Idle
                 latestLocation = null
@@ -258,20 +275,59 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showWarning(warning: MSightSimpleWarning) {
+        val isSameEvent = warningVisible
+                && warning.eventId != null
+                && warning.eventId == currentWarningEventId
+
         warningDisplayJob?.cancel()
         warningDisplayJob = lifecycleScope.launch {
-            if (warningVisible) {
-                warningVisible = false
-                delay(WARNING_RESHOW_DELAY_MILLIS)
+            if (!isSameEvent) {
+                // New or different event — hide current banner first if visible
+                if (warningVisible) {
+                    warningVisible = false
+                    delay(WARNING_RESHOW_DELAY_MILLIS)
+                }
+                latestWarning = warning
+                currentWarningEventId = warning.eventId
+                warningVisible = true
+                Log.d("MSight", "Received warning: $warning")
+                startWarningSound()
+            } else {
+                // Same event still active — extend the timeout, no visual restart
+                Log.d("MSight", "Extending warning timeout for event_id=${warning.eventId}")
             }
-
-            latestWarning = warning
-            warningVisible = true
-            Log.d("MSight", "Received warning: $warning")
+            warningResetKey++
 
             delay(WARNING_AUTO_DISMISS_MILLIS)
             warningVisible = false
+            currentWarningEventId = null
+            stopWarningSound()
         }
+    }
+
+    private fun startWarningSound() {
+        stopWarningSound()
+        warningPlayer = MediaPlayer.create(
+            this,
+            R.raw.warning_sound
+        ).apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            isLooping = true
+            start()
+        }
+    }
+
+    private fun stopWarningSound() {
+        warningPlayer?.let {
+            if (it.isPlaying) it.stop()
+            it.release()
+        }
+        warningPlayer = null
     }
 }
 
@@ -282,6 +338,7 @@ fun MSightScreen(
     latestLocation: MSightLocationEvent?,
     latestWarning: MSightSimpleWarning?,
     warningVisible: Boolean,
+    warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
@@ -304,6 +361,7 @@ fun MSightScreen(
             latestLocation = latestLocation,
             latestWarning = latestWarning,
             warningVisible = warningVisible,
+            warningResetKey = warningResetKey,
             latestSdsmEvent = latestSdsmEvent,
             onStop = onStop,
             onDismissWarning = onDismissWarning
@@ -480,6 +538,7 @@ private fun ActiveMapScreen(
     latestLocation: MSightLocationEvent?,
     latestWarning: MSightSimpleWarning?,
     warningVisible: Boolean,
+    warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
@@ -621,7 +680,7 @@ private fun ActiveMapScreen(
                 targetOffsetY = { -it }
             ) + fadeOut(tween(180))
         ) {
-            WarningBanner(warning = latestWarning, onDismiss = onDismissWarning)
+            WarningBanner(warning = latestWarning, resetKey = warningResetKey, onDismiss = onDismissWarning)
         }
     }
 }
@@ -734,6 +793,7 @@ private fun StatusBadge(clientState: ClientState) {
 @Composable
 private fun WarningBanner(
     warning: MSightSimpleWarning?,
+    resetKey: Int,
     onDismiss: () -> Unit
 ) {
     val transition = rememberInfiniteTransition(label = "warning")
@@ -757,14 +817,15 @@ private fun WarningBanner(
         label = "icon"
     )
 
-    var progress by remember(warning) { mutableStateOf(1f) }
-    LaunchedEffect(warning) {
-        val steps = 60
-        val stepDelay = WARNING_AUTO_DISMISS_MILLIS / steps
-        for (i in 1..steps) {
-            delay(stepDelay)
-            progress = 1f - i / steps.toFloat()
-        }
+    val progressAnim = remember(resetKey) { Animatable(1f) }
+    LaunchedEffect(resetKey) {
+        progressAnim.animateTo(
+            targetValue = 0f,
+            animationSpec = tween(
+                durationMillis = WARNING_AUTO_DISMISS_MILLIS.toInt(),
+                easing = LinearEasing
+            )
+        )
     }
 
     Box(
@@ -850,7 +911,7 @@ private fun WarningBanner(
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(progress)
+                        .fillMaxWidth(progressAnim.value)
                         .fillMaxSize()
                         .background(Color(0xFFFF1744).copy(alpha = 0.88f))
                 )
