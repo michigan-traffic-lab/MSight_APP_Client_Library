@@ -576,7 +576,13 @@ private fun ActiveMapScreen(
 
     // Stable map: objectID -> (LatLng, SdsmDetectedObject) — updated in-place to avoid marker flash
     val objectPositions = remember { mutableStateMapOf<Int, Pair<LatLng, SdsmDetectedObject>>() }
-    LaunchedEffect(latestSdsmEvent, sdsmFilter) {
+
+    // Clear stale objects whenever the filter selection changes
+    LaunchedEffect(sdsmFilter) {
+        objectPositions.clear()
+    }
+
+    LaunchedEffect(latestSdsmEvent) {
         val event = latestSdsmEvent
         if (event == null) {
             objectPositions.clear()
@@ -587,10 +593,10 @@ private fun ActiveMapScreen(
             SdsmFilter.DERQ -> event.sensorName.startsWith("derq", ignoreCase = true)
             SdsmFilter.OUSTER -> event.sensorName.startsWith("ouster", ignoreCase = true)
         }
-        if (!showEvent) {
-            objectPositions.clear()
-            return@LaunchedEffect
-        }
+        // If this event is from a source we are not showing, ignore it entirely —
+        // do NOT clear, so already-displayed objects from the correct source stay visible.
+        if (!showEvent) return@LaunchedEffect
+
         val newIds = event.objects.map { it.objectID }.toSet()
         objectPositions.keys.retainAll(newIds)
         event.objects.forEach { obj ->
