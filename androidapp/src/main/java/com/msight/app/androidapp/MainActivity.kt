@@ -243,20 +243,11 @@ class MainActivity : ComponentActivity() {
 
                             is MSightSdsmEvent -> {
                                 latestSdsmEvent = event
+                                Log.d("MSight-SDSM", "sensor=${event.sensorName} ts=${event.timestampMillis} objects=${event.objects.size}")
                             }
 
                             is MSightSpatEvent -> {
-                                val ix = event.intersection
-                                Log.d("MSight-SPAT",
-                                    "SPAT sensor=${event.sensorName} name=${event.intersectionName} " +
-                                    "intId=${ix.id.id} revision=${ix.revision} " +
-                                    "moy=${ix.moy} ts=${ix.timeStamp} signals=${ix.states.size}")
-                                ix.states.forEach { state ->
-                                    val sts = state.stateTimeSpeed.firstOrNull()
-                                    Log.d("MSight-SPAT",
-                                        "  sg=${state.signalGroup} state=${sts?.eventState} " +
-                                        "minEnd=${sts?.timing?.minEndTime} maxEnd=${sts?.timing?.maxEndTime}")
-                                }
+                                Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
 
                             else -> {
@@ -576,16 +567,20 @@ private fun ActiveMapScreen(
 
     // Stable map: objectID -> (LatLng, SdsmDetectedObject) — updated in-place to avoid marker flash
     val objectPositions = remember { mutableStateMapOf<Int, Pair<LatLng, SdsmDetectedObject>>() }
+    // Timestamp of the last frame that was written into objectPositions (for split-frame merging)
+    val lastFrameTimestamp = remember { mutableStateOf<Long?>(null) }
 
     // Clear stale objects whenever the filter selection changes
     LaunchedEffect(sdsmFilter) {
         objectPositions.clear()
+        lastFrameTimestamp.value = null
     }
 
     LaunchedEffect(latestSdsmEvent) {
         val event = latestSdsmEvent
         if (event == null) {
             objectPositions.clear()
+            lastFrameTimestamp.value = null
             return@LaunchedEffect
         }
         val showEvent = when (sdsmFilter) {
@@ -597,15 +592,31 @@ private fun ActiveMapScreen(
         // do NOT clear, so already-displayed objects from the correct source stay visible.
         if (!showEvent) return@LaunchedEffect
 
-        val newIds = event.objects.map { it.objectID }.toSet()
-        objectPositions.keys.retainAll(newIds)
-        event.objects.forEach { obj ->
-            val (lat, lon) = computeObjectLatLon(
-                event.refPos.lat, event.refPos.long,
-                obj.pos.offsetX, obj.pos.offsetY
-            )
-            objectPositions[obj.objectID] = LatLng(lat, lon) to obj
+        val prev = lastFrameTimestamp.value
+        val isSameFrame = prev != null && Math.abs(event.timestampMillis - prev) <= 50L
+
+        if (isSameFrame) {
+            // Split fragment of the same logical frame — merge objects into the existing map
+            event.objects.forEach { obj ->
+                val (lat, lon) = computeObjectLatLon(
+                    event.refPos.lat, event.refPos.long,
+                    obj.pos.offsetX, obj.pos.offsetY
+                )
+                objectPositions[obj.objectID] = LatLng(lat, lon) to obj
+            }
+        } else {
+            // New frame — replace the map with only the objects in this message
+            val newIds = event.objects.map { it.objectID }.toSet()
+            objectPositions.keys.retainAll(newIds)
+            event.objects.forEach { obj ->
+                val (lat, lon) = computeObjectLatLon(
+                    event.refPos.lat, event.refPos.long,
+                    obj.pos.offsetX, obj.pos.offsetY
+                )
+                objectPositions[obj.objectID] = LatLng(lat, lon) to obj
+            }
         }
+        lastFrameTimestamp.value = event.timestampMillis
     }
 
     LaunchedEffect(latestLocation) {
