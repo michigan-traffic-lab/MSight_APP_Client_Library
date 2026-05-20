@@ -29,6 +29,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -581,6 +584,16 @@ private fun extractJsonStringField(json: String, fieldName: String): String? {
     return pattern.find(json)?.groupValues?.getOrNull(1)
 }
 
+private fun sdsmTimestampToMillis(ts: SdsmTimestamp): Long? {
+    return runCatching {
+        val secondInt = ts.second.toInt()
+        val nanoOfSecond = ((ts.second - secondInt) * 1_000_000_000.0).roundToLong().toInt()
+        val ldt = LocalDateTime(ts.year, ts.month, ts.day, ts.hour, ts.minute, secondInt, nanoOfSecond)
+        // ts.offset is minutes east of UTC; toInstant(UTC) treats components as UTC, so subtract offset
+        ldt.toInstant(TimeZone.UTC).toEpochMilliseconds() - ts.offset * 60_000L
+    }.getOrNull()
+}
+
 private fun logInfo(message: String) {
     println("INFO: $message")
 }
@@ -617,7 +630,6 @@ private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSight
         val sdsmObj = msg["sdsm"]?.jsonObject ?: return null
 
         val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null
-        val timestampMillis = (captureTimestamp * 1000.0).roundToLong()
 
         val sdsmTimestamp = sdsmObj["sDSMTimeStamp"]?.jsonObject?.let { ts ->
             SdsmTimestamp(
@@ -630,6 +642,12 @@ private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSight
                 offset = ts["offset"]?.jsonPrimitive?.intOrNull ?: 0
             )
         }
+
+        // Use the SDSM's own sensor timestamp for frame identity; fall back to capture_timestamp
+        // if sDSMTimeStamp is absent. capture_timestamp / creation_timestamp are edge-server stamps
+        // and arrive ~350 ms after the sensor time, making them unsuitable for frame merging.
+        val timestampMillis = sdsmTimestamp?.let { sdsmTimestampToMillis(it) }
+            ?: (captureTimestamp * 1000.0).roundToLong()
 
         val refPos = lenientJson.decodeFromJsonElement<SdsmRefPos>(
             sdsmObj["refPos"] ?: return null
