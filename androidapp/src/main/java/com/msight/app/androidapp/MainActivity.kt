@@ -125,9 +125,9 @@ private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
 
 enum class SdsmFilter(val label: String) {
-    ALL("All"),
+    OUSTER("Ouster"),
     DERQ("DeRQ"),
-    OUSTER("Ouster")
+    MSIGHT("MSight")
 }
 
 sealed class ClientState {
@@ -556,7 +556,7 @@ private fun ActiveMapScreen(
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
-    var sdsmFilter by remember { mutableStateOf(SdsmFilter.ALL) }
+    var sdsmFilter by remember { mutableStateOf(SdsmFilter.OUSTER) }
     val markerCache = remember { HashMap<String, BitmapDescriptor>() }
 
     val cameraPositionState = rememberCameraPositionState {
@@ -584,9 +584,9 @@ private fun ActiveMapScreen(
             return@LaunchedEffect
         }
         val showEvent = when (sdsmFilter) {
-            SdsmFilter.ALL -> true
-            SdsmFilter.DERQ -> event.sensorName.startsWith("derq", ignoreCase = true)
             SdsmFilter.OUSTER -> event.sensorName.startsWith("ouster", ignoreCase = true)
+            SdsmFilter.DERQ -> event.sensorName.startsWith("derq", ignoreCase = true)
+            SdsmFilter.MSIGHT -> event.sensorName.startsWith("msight", ignoreCase = true)
         }
         // If this event is from a source we are not showing, ignore it entirely —
         // do NOT clear, so already-displayed objects from the correct source stay visible.
@@ -693,15 +693,15 @@ private fun ActiveMapScreen(
             FloatingActionButton(
                 onClick = {
                     sdsmFilter = when (sdsmFilter) {
-                        SdsmFilter.ALL -> SdsmFilter.DERQ
-                        SdsmFilter.DERQ -> SdsmFilter.OUSTER
-                        SdsmFilter.OUSTER -> SdsmFilter.ALL
+                        SdsmFilter.OUSTER -> SdsmFilter.DERQ
+                        SdsmFilter.DERQ -> SdsmFilter.MSIGHT
+                        SdsmFilter.MSIGHT -> SdsmFilter.OUSTER
                     }
                 },
                 containerColor = when (sdsmFilter) {
-                    SdsmFilter.ALL -> Color(0xFF388E3C)
-                    SdsmFilter.DERQ -> Color(0xFF0277BD)
                     SdsmFilter.OUSTER -> Color(0xFFE65100)
+                    SdsmFilter.DERQ -> Color(0xFF0277BD)
+                    SdsmFilter.MSIGHT -> Color(0xFF6A1B9A)
                 },
                 modifier = Modifier.size(48.dp)
             ) {
