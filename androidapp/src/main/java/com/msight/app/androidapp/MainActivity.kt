@@ -61,7 +61,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -123,6 +125,11 @@ import kotlin.math.sin
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
+
+private fun generateRandomClientId(): String {
+    val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "client-" + (1..8).map { chars.random() }.joinToString("")
+}
 
 enum class SdsmFilter(val label: String) {
     OUSTER("Ouster"),
@@ -361,7 +368,7 @@ fun MSightScreen(
     // Config state lives here so it survives screen transitions
     var cloudUrl by remember { mutableStateOf("https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com") }
     var appId by remember { mutableStateOf("msight-demo") }
-    var clientId by remember { mutableStateOf("client-001") }
+    var clientId by remember { mutableStateOf(generateRandomClientId()) }
     var roadUserType by remember { mutableStateOf(MSightRoadUserType.VEHICLE) }
     var roadUserSubType by remember { mutableStateOf("passenger_car") }
     var deviceType by remember { mutableStateOf(MSightDeviceType.CELLPHONE) }
@@ -387,6 +394,7 @@ fun MSightScreen(
             onAppIdChange = { appId = it },
             clientId = clientId,
             onClientIdChange = { clientId = it },
+            onClientIdRefresh = { clientId = generateRandomClientId() },
             roadUserType = roadUserType,
             onRoadUserTypeChange = { roadUserType = it },
             roadUserSubType = roadUserSubType,
@@ -422,6 +430,7 @@ private fun ConfigScreen(
     onAppIdChange: (String) -> Unit,
     clientId: String,
     onClientIdChange: (String) -> Unit,
+    onClientIdRefresh: () -> Unit,
     roadUserType: MSightRoadUserType,
     onRoadUserTypeChange: (MSightRoadUserType) -> Unit,
     roadUserSubType: String,
@@ -466,13 +475,26 @@ private fun ConfigScreen(
                 singleLine = true
             )
 
-            OutlinedTextField(
-                value = clientId,
-                onValueChange = onClientIdChange,
-                label = { Text("Client ID") },
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = clientId,
+                    onValueChange = onClientIdChange,
+                    label = { Text("Client ID") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                IconButton(onClick = onClientIdRefresh) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Generate new Client ID",
+                        tint = Color(0xFF1976D2)
+                    )
+                }
+            }
 
             EnumDropdown(
                 label = "Road User Type",
