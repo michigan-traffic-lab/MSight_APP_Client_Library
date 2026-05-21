@@ -529,7 +529,7 @@ private class MSightSignalProcessor(
     private var loadedMaps: List<MSightIntersectionMap> = emptyList()
     private var activeApproach: ApproachResult? = null
     private var latestSpatEvent: MSightSpatEvent? = null
-    private var minDistToRefPoint = Double.MAX_VALUE
+    private var hasCrossedStopLine = false
     private var lastEmitMillis = 0L
     private var hideJob: Job? = null
 
@@ -543,10 +543,6 @@ private class MSightSignalProcessor(
                 val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
                 if (result != null) {
                     activeApproach = result
-                    minDistToRefPoint = haversineDistanceMeters(
-                        locationEvent.latitude, locationEvent.longitude,
-                        result.intersection.refPoint.lat, result.intersection.refPoint.lon
-                    )
                     val spat = latestSpatEvent
                     if (spat != null) {
                         displayState = DisplayState.ACTIVE
@@ -556,23 +552,24 @@ private class MSightSignalProcessor(
             }
             DisplayState.ACTIVE -> {
                 val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
+                // Use the latest known approach for the crossing check even if detection just dropped.
+                val knownApproach = result ?: activeApproach
+                if (knownApproach != null) {
+                    val signedDist = computeSignedApproachDist(locationEvent, knownApproach)
+                    if (signedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
+                        hasCrossedStopLine = true
+                        startHiding()
+                        return
+                    }
+                }
                 if (result != null) {
                     activeApproach = result
-                    val dist = haversineDistanceMeters(
-                        locationEvent.latitude, locationEvent.longitude,
-                        result.intersection.refPoint.lat, result.intersection.refPoint.lon
-                    )
-                    if (dist < minDistToRefPoint) minDistToRefPoint = dist
                     val spat = latestSpatEvent
                     if (spat != null) {
                         emitSignalState(locationEvent.timestampMillis, result, spat, force = false)
                     }
                 } else {
-                    if (minDistToRefPoint <= PASSED_REF_POINT_THRESHOLD_METERS) {
-                        startHiding()
-                    } else {
-                        clearAndReset()
-                    }
+                    if (hasCrossedStopLine) startHiding() else clearAndReset()
                 }
             }
             DisplayState.HIDING -> Unit
@@ -607,7 +604,7 @@ private class MSightSignalProcessor(
         spat: MSightSpatEvent,
         force: Boolean
     ) {
-        if (!force && timestampMillis - lastEmitMillis < SIGNAL_UPDATE_INTERVAL_MILLIS) return
+        // if (!force && timestampMillis - lastEmitMillis < SIGNAL_UPDATE_INTERVAL_MILLIS) return
         lastEmitMillis = timestampMillis
         val colors = MSightApproachDetector.extractArmSignals(result.arm, spat)
         val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
@@ -650,8 +647,23 @@ private class MSightSignalProcessor(
         displayState = DisplayState.IDLE
         activeApproach = null
         latestSpatEvent = null
-        minDistToRefPoint = Double.MAX_VALUE
+        hasCrossedStopLine = false
         lastEmitMillis = 0L
+    }
+
+    /** Signed distance (meters) of the vehicle past the perpendicular stop line through refPoint.
+     *  Positive = vehicle is on the "past intersection" side; negative = still approaching. */
+    private fun computeSignedApproachDist(
+        location: MSightLocationEvent,
+        approach: ApproachResult
+    ): Double {
+        val ref = approach.intersection.refPoint
+        val bearingRad = approach.arm.approachBearingDeg * PI / 180.0
+        val dirEast = sin(bearingRad)
+        val dirNorth = cos(bearingRad)
+        val deltaNorthM = (location.latitude - ref.lat) * 111320.0
+        val deltaEastM = (location.longitude - ref.lon) * cos(ref.lat * PI / 180.0) * 111320.0
+        return deltaEastM * dirEast + deltaNorthM * dirNorth
     }
 }
 
@@ -868,7 +880,7 @@ private const val MAP_FETCH_RADIUS_METERS = 150
 private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
-private const val PASSED_REF_POINT_THRESHOLD_METERS = 3.0
+private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 10.0
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
 private const val POST_PASS_HIDE_DELAY_MILLIS = 2_000L
 
