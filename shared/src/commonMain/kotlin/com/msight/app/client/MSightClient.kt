@@ -530,6 +530,8 @@ private class MSightSignalProcessor(
     private var activeApproach: ApproachResult? = null
     private var latestSpatEvent: MSightSpatEvent? = null
     private var hasCrossedStopLine = false
+    private var pendingApproach: ApproachResult? = null
+    private var pendingFrames = 0
     private var lastEmitMillis = 0L
     private var hideJob: Job? = null
 
@@ -563,10 +565,31 @@ private class MSightSignalProcessor(
                     }
                 }
                 if (result != null) {
-                    activeApproach = result
+                    val current = activeApproach
+                    if (current == null || result.arm.armId == current.arm.armId) {
+                        // Same arm — accept immediately, discard any pending candidate.
+                        activeApproach = result
+                        pendingApproach = null
+                        pendingFrames = 0
+                    } else {
+                        // Different arm — require APPROACH_SWITCH_MIN_FRAMES consecutive
+                        // frames with the same new arm before accepting the switch.
+                        if (result.arm.armId == pendingApproach?.arm?.armId) {
+                            pendingFrames++
+                        } else {
+                            pendingApproach = result
+                            pendingFrames = 1
+                        }
+                        if (pendingFrames >= APPROACH_SWITCH_MIN_FRAMES) {
+                            activeApproach = pendingApproach
+                            pendingApproach = null
+                            pendingFrames = 0
+                        }
+                    }
+                    val stableApproach = activeApproach
                     val spat = latestSpatEvent
-                    if (spat != null) {
-                        emitSignalState(locationEvent.timestampMillis, result, spat, force = false)
+                    if (stableApproach != null && spat != null) {
+                        emitSignalState(locationEvent.timestampMillis, stableApproach, spat, force = false)
                     }
                 } else {
                     if (hasCrossedStopLine) startHiding() else clearAndReset()
@@ -648,6 +671,8 @@ private class MSightSignalProcessor(
         activeApproach = null
         latestSpatEvent = null
         hasCrossedStopLine = false
+        pendingApproach = null
+        pendingFrames = 0
         lastEmitMillis = 0L
     }
 
@@ -881,6 +906,7 @@ private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
 private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 10.0
+private const val APPROACH_SWITCH_MIN_FRAMES = 3
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
 private const val POST_PASS_HIDE_DELAY_MILLIS = 2_000L
 
