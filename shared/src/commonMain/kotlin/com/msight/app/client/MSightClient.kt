@@ -41,7 +41,13 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.math.PI
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToLong
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 enum class MSightRoadUserType {
     VEHICLE,
@@ -83,8 +89,12 @@ class MSightClient(
     private var locationUploader: MSightLocationUploader? = null
     private var locationUpdateEmitter: MSightLocationUpdateEmitter? = null
     private var webSocketConnection: MSightWebSocketConnection? = null
+    private var mapLoader: MSightMapLoader? = null
+    private var signalProcessor: MSightSignalProcessor? = null
+    private val _locationHistory = ArrayDeque<MSightTrajectoryPoint>()
 
     val events: SharedFlow<MSightEvent> = _events.asSharedFlow()
+    val locationHistory: List<MSightTrajectoryPoint> get() = _locationHistory.toList()
 
     init {
         runBlocking {
@@ -100,13 +110,34 @@ class MSightClient(
             client = httpClient,
             scope = scope
         )
+        val initializedSignalProcessor = MSightSignalProcessor(
+            scope = scope,
+            onSignalState = { event -> _events.tryEmit(event) }
+        )
+        val initializedMapLoader = MSightMapLoader(
+            config = config,
+            client = httpClient,
+            scope = scope,
+            onMapsLoaded = { maps ->
+                initializedSignalProcessor.onMapsLoaded(maps)
+                _events.tryEmit(MSightMapLoadedEvent(
+                    timestampMillis = currentTimeMillis(),
+                    maps = maps
+                ))
+            }
+        )
 
         locationUploader = initializedLocationUploader
+        mapLoader = initializedMapLoader
+        signalProcessor = initializedSignalProcessor
         locationUpdateEmitter = MSightLocationUpdateEmitter(
             context = context,
             updateFrequencyHz = config.locationUpdateFrequencyHz,
             onLocation = { locationEvent ->
                 initializedLocationUploader.upload(locationEvent)
+                updateLocationHistory(locationEvent)
+                initializedMapLoader.onLocation(locationEvent)
+                initializedSignalProcessor.onLocation(locationEvent, _locationHistory.toList())
                 _events.tryEmit(locationEvent)
             }
         )
@@ -115,7 +146,10 @@ class MSightClient(
             client = httpClient,
             scope = scope,
             onConnected = initializedLocationUploader::resendLastKnownLocation,
-            onEvent = { event -> _events.tryEmit(event) }
+            onEvent = { event ->
+                if (event is MSightSpatEvent) initializedSignalProcessor.onSpat(event)
+                _events.tryEmit(event)
+            }
         )
 
         try {
@@ -137,9 +171,30 @@ class MSightClient(
         locationUpdateEmitter?.stop()
         webSocketConnection?.close()
         locationUploader?.close()
+        signalProcessor?.cancel()
         locationUpdateEmitter = null
         webSocketConnection = null
         locationUploader = null
+        mapLoader = null
+        signalProcessor = null
+        _locationHistory.clear()
+    }
+
+    private fun updateLocationHistory(event: MSightLocationEvent) {
+        _locationHistory.addLast(
+            MSightTrajectoryPoint(
+                timestampMillis = event.timestampMillis,
+                latitude = event.latitude,
+                longitude = event.longitude,
+                altitudeMeters = event.altitudeMeters,
+                speedMps = event.speedMps,
+                headingDegrees = event.bearingDegrees
+            )
+        )
+        val cutoff = event.timestampMillis - TRAJECTORY_HISTORY_MILLIS
+        while (_locationHistory.isNotEmpty() && _locationHistory.first().timestampMillis < cutoff) {
+            _locationHistory.removeFirst()
+        }
     }
 
     fun close() {
@@ -413,6 +468,193 @@ private fun nextReconnectDelayMillis(currentDelayMillis: Long): Long {
     return (currentDelayMillis * 2).coerceAtMost(MAX_RECONNECT_DELAY_MILLIS)
 }
 
+private class MSightMapLoader(
+    private val config: MSightClientConfig,
+    private val client: HttpClient,
+    private val scope: CoroutineScope,
+    private val onMapsLoaded: (List<MSightIntersectionMap>) -> Unit
+) {
+    private val mapSearchUrl = config.cloudUrl.trimEnd('/') + MAP_SEARCH_PATH
+    private var lastFetchLat: Double? = null
+    private var lastFetchLon: Double? = null
+    private var loadedMapCenters: List<Pair<Double, Double>> = emptyList()
+
+    fun onLocation(locationEvent: MSightLocationEvent) {
+        val lat = locationEvent.latitude
+        val lon = locationEvent.longitude
+
+        // Skip fetch if the current location is still within the search radius of any
+        // already-loaded map. There is no new intersection to discover inside a zone we
+        // already covered, so the existing maps remain valid.
+        if (loadedMapCenters.any { (cLat, cLon) ->
+                haversineDistanceMeters(lat, lon, cLat, cLon) <= MAP_SEARCH_RADIUS_METERS
+            }) return
+
+        // Outside all loaded map areas — only fetch if we have moved far enough from the
+        // last fetch point to avoid hammering the server while walking in an uncovered zone.
+        val prevLat = lastFetchLat
+        val prevLon = lastFetchLon
+        if (prevLat != null && prevLon != null &&
+            haversineDistanceMeters(prevLat, prevLon, lat, lon) < MAP_REFETCH_DISTANCE_METERS) {
+            return
+        }
+        lastFetchLat = lat
+        lastFetchLon = lon
+        scope.launch { fetchAndEmit(lat, lon) }
+    }
+
+    private suspend fun fetchAndEmit(lat: Double, lon: Double) {
+        runCatching {
+            val url = "$mapSearchUrl?lat=$lat&lon=$lon&radius=$MAP_SEARCH_RADIUS_METERS"
+            val response = client.get(url)
+            parseMapsResponse(response.bodyAsText())
+        }.onSuccess { maps ->
+            if (maps.isNotEmpty()) {
+                loadedMapCenters = maps.map { it.centerLat to it.centerLon }
+                onMapsLoaded(maps)
+            }
+        }.onFailure { throwable ->
+            logError("MSightMapLoader fetch failed: ${describeThrowable(throwable)}")
+        }
+    }
+}
+
+private class MSightSignalProcessor(
+    private val scope: CoroutineScope,
+    private val onSignalState: (MSightSignalStateEvent) -> Unit
+) {
+    private enum class DisplayState { IDLE, ACTIVE, HIDING }
+
+    private var displayState = DisplayState.IDLE
+    private var loadedMaps: List<MSightIntersectionMap> = emptyList()
+    private var activeApproach: ApproachResult? = null
+    private var latestSpatEvent: MSightSpatEvent? = null
+    private var minDistToRefPoint = Double.MAX_VALUE
+    private var lastEmitMillis = 0L
+    private var hideJob: Job? = null
+
+    fun onMapsLoaded(maps: List<MSightIntersectionMap>) {
+        loadedMaps = maps
+    }
+
+    fun onLocation(locationEvent: MSightLocationEvent, history: List<MSightTrajectoryPoint>) {
+        when (displayState) {
+            DisplayState.IDLE -> {
+                val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
+                if (result != null) {
+                    activeApproach = result
+                    minDistToRefPoint = haversineDistanceMeters(
+                        locationEvent.latitude, locationEvent.longitude,
+                        result.intersection.refPoint.lat, result.intersection.refPoint.lon
+                    )
+                    val spat = latestSpatEvent
+                    if (spat != null) {
+                        displayState = DisplayState.ACTIVE
+                        emitSignalState(locationEvent.timestampMillis, result, spat, force = true)
+                    }
+                }
+            }
+            DisplayState.ACTIVE -> {
+                val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
+                if (result != null) {
+                    activeApproach = result
+                    val dist = haversineDistanceMeters(
+                        locationEvent.latitude, locationEvent.longitude,
+                        result.intersection.refPoint.lat, result.intersection.refPoint.lon
+                    )
+                    if (dist < minDistToRefPoint) minDistToRefPoint = dist
+                    val spat = latestSpatEvent
+                    if (spat != null) {
+                        emitSignalState(locationEvent.timestampMillis, result, spat, force = false)
+                    }
+                } else {
+                    if (minDistToRefPoint <= PASSED_REF_POINT_THRESHOLD_METERS) {
+                        startHiding()
+                    } else {
+                        clearAndReset()
+                    }
+                }
+            }
+            DisplayState.HIDING -> Unit
+        }
+    }
+
+    fun onSpat(spatEvent: MSightSpatEvent) {
+        val name = spatEvent.intersectionName ?: return
+        val approach = activeApproach ?: return
+        if (name != approach.intersection.name) return
+
+        latestSpatEvent = spatEvent
+
+        when (displayState) {
+            DisplayState.IDLE -> {
+                displayState = DisplayState.ACTIVE
+                emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = true)
+            }
+            DisplayState.ACTIVE -> emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = false)
+            DisplayState.HIDING -> Unit
+        }
+    }
+
+    fun cancel() {
+        hideJob?.cancel()
+        hideJob = null
+    }
+
+    private fun emitSignalState(
+        timestampMillis: Long,
+        result: ApproachResult,
+        spat: MSightSpatEvent,
+        force: Boolean
+    ) {
+        if (!force && timestampMillis - lastEmitMillis < SIGNAL_UPDATE_INTERVAL_MILLIS) return
+        lastEmitMillis = timestampMillis
+        val colors = MSightApproachDetector.extractArmSignals(result.arm, spat)
+        val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
+        onSignalState(MSightSignalStateEvent(
+            timestampMillis = timestampMillis,
+            intersectionName = result.intersection.name,
+            straightColor = colors.straightColor,
+            leftTurnColor = colors.leftTurnColor,
+            showSingleLight = totalGroups <= 1
+        ))
+    }
+
+    private fun startHiding() {
+        displayState = DisplayState.HIDING
+        hideJob = scope.launch {
+            delay(POST_PASS_HIDE_DELAY_MILLIS)
+            onSignalState(MSightSignalStateEvent(
+                timestampMillis = currentTimeMillis(),
+                intersectionName = null,
+                straightColor = SignalColor.UNKNOWN,
+                leftTurnColor = SignalColor.UNKNOWN
+            ))
+            clearState()
+        }
+    }
+
+    private fun clearAndReset() {
+        onSignalState(MSightSignalStateEvent(
+            timestampMillis = currentTimeMillis(),
+            intersectionName = null,
+            straightColor = SignalColor.UNKNOWN,
+            leftTurnColor = SignalColor.UNKNOWN
+        ))
+        clearState()
+    }
+
+    private fun clearState() {
+        hideJob?.cancel()
+        hideJob = null
+        displayState = DisplayState.IDLE
+        activeApproach = null
+        latestSpatEvent = null
+        minDistToRefPoint = Double.MAX_VALUE
+        lastEmitMillis = 0L
+    }
+}
+
 private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     if (!looksLikeJsonObject(rawMessage)) {
         return null
@@ -621,6 +863,13 @@ private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
 private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
 private const val SPAT_MESSAGE_TYPE = "spat"
+private const val MAP_SEARCH_PATH = "/v1/maps/search"
+private const val MAP_SEARCH_RADIUS_METERS = 100
+private const val MAP_REFETCH_DISTANCE_METERS = 50.0
+private const val TRAJECTORY_HISTORY_MILLIS = 30_000L
+private const val PASSED_REF_POINT_THRESHOLD_METERS = 3.0
+private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
+private const val POST_PASS_HIDE_DELAY_MILLIS = 2_000L
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -803,4 +1052,177 @@ private fun parseDetectedObject(entry: JsonObject): SdsmDetectedObject? {
     } catch (e: Exception) {
         null
     }
+}
+
+// ── Map parsing ──────────────────────────────────────────────────────────────
+
+private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
+    if (!looksLikeJsonObject(body)) return emptyList()
+    return try {
+        val root = lenientJson.parseToJsonElement(body).jsonObject
+        root["maps"]?.jsonArray?.mapNotNull { parseMapEntry(it.jsonObject) } ?: emptyList()
+    } catch (e: Exception) {
+        logError("parseMapsResponse failed: ${describeThrowable(e)}")
+        emptyList()
+    }
+}
+
+private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
+    return try {
+        val dbId = entry["id"]?.jsonPrimitive?.intOrNull ?: return null
+        val name = entry["name"]?.jsonPrimitive?.contentOrNull ?: return null
+        val centerLat = entry["center_lat"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val centerLon = entry["center_lon"]?.jsonPrimitive?.doubleOrNull ?: return null
+
+        val data = entry["data"]?.jsonObject ?: return null
+        val intersectionsArray = data["intersections"]?.jsonArray
+            ?.takeIf { it.isNotEmpty() } ?: return null
+        val intersection = intersectionsArray[0].jsonObject
+
+        val idObj = intersection["id"]?.jsonObject ?: return null
+        val intersectionId = idObj["id"]?.jsonPrimitive?.intOrNull ?: return null
+        val intersectionRegion = idObj["region"]?.jsonPrimitive?.intOrNull
+
+        val refPosObj = intersection["refPoint"]?.jsonObject ?: return null
+        val refLat = refPosObj["lat"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val refLon = refPosObj["long"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val refElev = refPosObj["elevation"]?.jsonPrimitive?.doubleOrNull
+        val refPoint = MapRefPoint(refLat, refLon, refElev)
+
+        val laneSet = intersection["laneSet"]?.jsonArray ?: return null
+        val lanes = laneSet.mapNotNull { parseMapLane(it.jsonObject) }
+
+        MSightIntersectionMap(
+            dbId = dbId,
+            name = name,
+            intersectionId = intersectionId,
+            intersectionRegion = intersectionRegion,
+            refPoint = refPoint,
+            centerLat = centerLat,
+            centerLon = centerLon,
+            arms = buildMapArms(lanes)
+        )
+    } catch (e: Exception) {
+        logError("parseMapEntry failed: ${describeThrowable(e)}")
+        null
+    }
+}
+
+private fun parseMapLane(laneObj: JsonObject): MapLane? {
+    return try {
+        // Skip crosswalks
+        val laneType = laneObj["laneAttributes"]?.jsonObject
+            ?.get("laneType")?.jsonArray
+            ?.getOrNull(0)?.jsonPrimitive?.contentOrNull
+        if (laneType == "crosswalk") return null
+
+        val armId = laneObj["arm_id"]?.jsonPrimitive?.intOrNull ?: return null
+        val laneID = laneObj["laneID"]?.jsonPrimitive?.intOrNull ?: return null
+        val isIngress = laneObj.containsKey("ingressApproach")
+
+        // nodeList = ["nodes", [{delta:[type,{x,y}], attributes?}, ...]]
+        val nodesArray = laneObj["nodeList"]?.jsonArray
+            ?.getOrNull(1)?.jsonArray ?: return null
+
+        val nodes = buildList {
+            var cumX = 0.0
+            var cumY = 0.0
+            for (element in nodesArray) {
+                val nodeObj = element.jsonObject
+                val deltaArray = nodeObj["delta"]?.jsonArray ?: continue
+                val xyObj = deltaArray.getOrNull(1)?.jsonObject ?: continue
+                val dx = xyObj["x"]?.jsonPrimitive?.doubleOrNull ?: continue
+                val dy = xyObj["y"]?.jsonPrimitive?.doubleOrNull ?: continue
+                cumX += dx
+                cumY += dy
+                add(MapLaneNode(cumX, cumY))
+            }
+        }
+
+        val connections = if (isIngress) {
+            laneObj["connectsTo"]?.jsonArray
+                ?.mapNotNull { parseMapLaneConnection(it.jsonObject) }
+                ?: emptyList()
+        } else {
+            emptyList()
+        }
+
+        val leftNeighborId = (laneObj["left_neighbor"] as? JsonObject)?.get("laneID")?.jsonPrimitive?.intOrNull
+        val rightNeighborId = (laneObj["right_neighbor"] as? JsonObject)?.get("laneID")?.jsonPrimitive?.intOrNull
+
+        MapLane(
+            laneID = laneID, armId = armId, isIngress = isIngress,
+            nodes = nodes, connections = connections,
+            leftNeighborId = leftNeighborId, rightNeighborId = rightNeighborId
+        )
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun parseMapLaneConnection(connObj: JsonObject): MapLaneConnection? {
+    return try {
+        val signalGroup = connObj["signalGroup"]?.jsonPrimitive?.intOrNull ?: return null
+        MapLaneConnection(signalGroup = signalGroup)
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun buildMapArms(lanes: List<MapLane>): List<MapArm> {
+    val laneById = lanes.associateBy { it.laneID }
+    return lanes.groupBy { it.armId }.map { (armId, armLanes) ->
+        val ingressLanes = armLanes.filter { it.isIngress }
+        val egressLanes = armLanes.filter { !it.isIngress }
+        val straight = mutableSetOf<Int>()
+        val leftTurn = mutableSetOf<Int>()
+        val rightTurn = mutableSetOf<Int>()
+        for (lane in ingressLanes) {
+            val laneSignalGroups = lane.connections.map { it.signalGroup }
+            val leftNeighbor = lane.leftNeighborId?.let { laneById[it] }
+            val rightNeighbor = lane.rightNeighborId?.let { laneById[it] }
+            // Left-turn: left neighbor is egress, right neighbor is ingress or absent
+            val isLeftTurn = leftNeighbor != null && !leftNeighbor.isIngress &&
+                             (rightNeighbor == null || rightNeighbor.isIngress)
+            // Straight: left neighbor is ingress or absent, right neighbor is ingress or absent
+            val isStraight = (leftNeighbor == null || leftNeighbor.isIngress) &&
+                             (rightNeighbor == null || rightNeighbor.isIngress)
+            when {
+                isLeftTurn -> leftTurn.addAll(laneSignalGroups)
+                isStraight -> straight.addAll(laneSignalGroups)
+                else       -> { straight.addAll(laneSignalGroups); leftTurn.addAll(laneSignalGroups) }
+            }
+        }
+        MapArm(
+            armId = armId,
+            approachBearingDeg = computeApproachBearing(ingressLanes),
+            ingressLanes = ingressLanes,
+            egressLanes = egressLanes,
+            straightSignalGroups = straight,
+            leftTurnSignalGroups = leftTurn,
+            rightTurnSignalGroups = rightTurn
+        )
+    }
+}
+
+/** Bearing (0–360°, clockwise from north) of a vehicle traveling toward the stop bar. */
+private fun computeApproachBearing(ingressLanes: List<MapLane>): Double {
+    val lane = ingressLanes.firstOrNull { it.nodes.size >= 2 } ?: return 0.0
+    val first = lane.nodes.first()   // stop bar — nearest to intersection
+    val last  = lane.nodes.last()    // far end of the approach
+    val dx = first.offsetX - last.offsetX   // east component
+    val dy = first.offsetY - last.offsetY   // north component
+    return (atan2(dx, dy) * (180.0 / PI) + 360.0) % 360.0
+}
+
+private fun haversineDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val R = 6_371_000.0
+    val phi1 = lat1 * PI / 180.0
+    val phi2 = lat2 * PI / 180.0
+    val dPhi = (lat2 - lat1) * PI / 180.0
+    val dLambda = (lon2 - lon1) * PI / 180.0
+    val sinHalfDPhi = sin(dPhi / 2)
+    val sinHalfDLambda = sin(dLambda / 2)
+    val a = sinHalfDPhi * sinHalfDPhi + cos(phi1) * cos(phi2) * sinHalfDLambda * sinHalfDLambda
+    return R * 2.0 * asin(sqrt(a))
 }

@@ -104,6 +104,7 @@ import com.msight.app.client.MSightClient
 import com.msight.app.client.MSightClientConfig
 import com.msight.app.client.MSightDeviceType
 import com.msight.app.client.MSightLocationEvent
+import com.msight.app.client.MSightMapLoadedEvent
 import com.msight.app.client.MSightRoadUserType
 import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
@@ -116,6 +117,8 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.msight.app.client.MSightSignalStateEvent
+import com.msight.app.client.SignalColor
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -145,6 +148,10 @@ class MainActivity : ComponentActivity() {
     private var warningVisible by mutableStateOf(false)
     private var warningResetKey by mutableStateOf(0)
     private var latestSdsmEvent by mutableStateOf<MSightSdsmEvent?>(null)
+    private var activeIntersectionName by mutableStateOf<String?>(null)
+    private var straightSignalColor by mutableStateOf(SignalColor.UNKNOWN)
+    private var leftSignalColor by mutableStateOf(SignalColor.UNKNOWN)
+    private var showSingleLight by mutableStateOf(false)
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -177,6 +184,10 @@ class MainActivity : ComponentActivity() {
                         warningVisible = warningVisible,
                         warningResetKey = warningResetKey,
                         latestSdsmEvent = latestSdsmEvent,
+                        activeIntersectionName = activeIntersectionName,
+                        straightSignalColor = straightSignalColor,
+                        leftSignalColor = leftSignalColor,
+                        showSingleLight = showSingleLight,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
                         onDismissWarning = {
@@ -250,6 +261,17 @@ class MainActivity : ComponentActivity() {
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
 
+                            is MSightMapLoadedEvent -> {
+                                Log.d("MSight-MAP", "Loaded ${event.maps.size} map(s): ${event.maps.map { it.name }}")
+                            }
+
+                            is MSightSignalStateEvent -> {
+                                activeIntersectionName = event.intersectionName
+                                straightSignalColor = event.straightColor
+                                leftSignalColor = event.leftTurnColor
+                                showSingleLight = event.showSingleLight
+                            }
+
                             else -> {
                                 Log.d("MSight", "Received event: $event")
                             }
@@ -282,6 +304,10 @@ class MainActivity : ComponentActivity() {
                 clientState = ClientState.Idle
                 latestLocation = null
                 warningVisible = false
+                activeIntersectionName = null
+                straightSignalColor = SignalColor.UNKNOWN
+                leftSignalColor = SignalColor.UNKNOWN
+                showSingleLight = false
             }
         }
     }
@@ -341,6 +367,7 @@ class MainActivity : ComponentActivity() {
         }
         warningPlayer = null
     }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -352,6 +379,10 @@ fun MSightScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    activeIntersectionName: String?,
+    straightSignalColor: SignalColor,
+    leftSignalColor: SignalColor,
+    showSingleLight: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
@@ -375,6 +406,10 @@ fun MSightScreen(
             warningVisible = warningVisible,
             warningResetKey = warningResetKey,
             latestSdsmEvent = latestSdsmEvent,
+            activeIntersectionName = activeIntersectionName,
+            straightSignalColor = straightSignalColor,
+            leftSignalColor = leftSignalColor,
+            showSingleLight = showSingleLight,
             onStop = onStop,
             onDismissWarning = onDismissWarning
         )
@@ -552,6 +587,10 @@ private fun ActiveMapScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    activeIntersectionName: String?,
+    straightSignalColor: SignalColor,
+    leftSignalColor: SignalColor,
+    showSingleLight: Boolean,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
@@ -754,6 +793,23 @@ private fun ActiveMapScreen(
             exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(tween(200))
         ) {
             InfoPanel(clientState = clientState, latestLocation = latestLocation)
+        }
+
+        // Signal light overlay — shown when approaching an intersection
+        if (activeIntersectionName != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 12.dp)
+            ) {
+                SignalOverlay(
+                    intersectionName = activeIntersectionName,
+                    straightColor = straightSignalColor,
+                    leftColor = leftSignalColor,
+                    showSingleLight = showSingleLight
+                )
+            }
         }
 
         // Warning banner drops in from top with spring bounce
@@ -1089,6 +1145,61 @@ private fun computeObjectLatLon(
     val λ3 = λ1 + atan2(sin(d2) * cos(φ2), cos(d2) - sin(φ2) * sinφ3)
 
     return Pair(Math.toDegrees(φ3), Math.toDegrees(λ3))
+}
+
+private fun SignalColor.toComposeColor(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0xFF4CAF50)
+    SignalColor.YELLOW  -> Color(0xFFFFC107)
+    SignalColor.RED     -> Color(0xFFF44336)
+    SignalColor.UNKNOWN -> Color(0xFF607D8B)
+}
+
+@Composable
+private fun SignalOverlay(
+    intersectionName: String,
+    straightColor: SignalColor,
+    leftColor: SignalColor,
+    showSingleLight: Boolean
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xE6000000)),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = intersectionName,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            if (showSingleLight) {
+                val singleColor = if (straightColor != SignalColor.UNKNOWN) straightColor else leftColor
+                SignalLight(color = singleColor)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
+                    SignalLight(color = leftColor)
+                    SignalLight(color = straightColor)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalLight(color: SignalColor) {
+    Box(
+        modifier = Modifier
+            .size(60.dp)
+            .clip(CircleShape)
+            .background(color.toComposeColor())
+            .border(2.dp, Color.White.copy(alpha = 0.3f), CircleShape)
+    )
 }
 
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {

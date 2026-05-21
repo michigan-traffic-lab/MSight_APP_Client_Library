@@ -96,3 +96,20 @@ data class MSightVehicleVRUConflictEvent(
     ttcSeconds = ttcSeconds,
     pretSeconds = pretSeconds
 )
+
+data class MSightMapLoadedEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    val maps: List<MSightIntersectionMap>
+) : MSightEvent(timestampMillis)
+
+data class MSightSignalStateEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    /** null when the device is not approaching any known intersection */
+    val intersectionName: String?,
+    val straightColor: SignalColor,
+    val leftTurnColor: SignalColor,
+    /** true when the arm has exactly one total signal group covering all movements */
+    val showSingleLight: Boolean = false
+) : MSightEvent(timestampMillis)
