@@ -487,7 +487,7 @@ private class MSightMapLoader(
         // already-loaded map. There is no new intersection to discover inside a zone we
         // already covered, so the existing maps remain valid.
         if (loadedMapCenters.any { (cLat, cLon) ->
-                haversineDistanceMeters(lat, lon, cLat, cLon) <= MAP_SEARCH_RADIUS_METERS
+                haversineDistanceMeters(lat, lon, cLat, cLon) <= MAP_LOADED_ZONE_METERS
             }) return
 
         // Outside all loaded map areas — only fetch if we have moved far enough from the
@@ -505,7 +505,7 @@ private class MSightMapLoader(
 
     private suspend fun fetchAndEmit(lat: Double, lon: Double) {
         runCatching {
-            val url = "$mapSearchUrl?lat=$lat&lon=$lon&radius=$MAP_SEARCH_RADIUS_METERS"
+            val url = "$mapSearchUrl?lat=$lat&lon=$lon&radius=$MAP_FETCH_RADIUS_METERS"
             val response = client.get(url)
             parseMapsResponse(response.bodyAsText())
         }.onSuccess { maps ->
@@ -864,9 +864,10 @@ private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
 private const val SPAT_MESSAGE_TYPE = "spat"
 private const val MAP_SEARCH_PATH = "/v1/maps/search"
-private const val MAP_SEARCH_RADIUS_METERS = 100
+private const val MAP_FETCH_RADIUS_METERS = 150
+private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
-private const val TRAJECTORY_HISTORY_MILLIS = 30_000L
+private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
 private const val PASSED_REF_POINT_THRESHOLD_METERS = 3.0
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
 private const val POST_PASS_HIDE_DELAY_MILLIS = 2_000L
