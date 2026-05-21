@@ -60,8 +60,11 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,7 +80,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -158,6 +163,7 @@ class MainActivity : ComponentActivity() {
     private var warningDisplayJob: Job? = null
     private var currentWarningEventId: String? = null
     private var warningPlayer: MediaPlayer? = null
+    private var isMuted by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -184,8 +190,14 @@ class MainActivity : ComponentActivity() {
                         warningVisible = warningVisible,
                         warningResetKey = warningResetKey,
                         latestSdsmEvent = latestSdsmEvent,
+                        isMuted = isMuted,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
+                        onToggleMute = {
+                            val newMuted = !isMuted
+                            isMuted = newMuted
+                            if (newMuted) stopWarningSound()
+                        },
                         onDismissWarning = {
                             warningVisible = false
                             currentWarningEventId = null
@@ -310,7 +322,7 @@ class MainActivity : ComponentActivity() {
                 currentWarningEventId = warning.eventId
                 warningVisible = true
                 Log.d("MSight", "Received warning: $warning")
-                startWarningSound()
+                if (!isMuted) startWarningSound()
             } else {
                 // Same event still active — extend the timeout, no visual restart
                 Log.d("MSight", "Extending warning timeout for event_id=${warning.eventId}")
@@ -359,8 +371,10 @@ fun MSightScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    isMuted: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
+    onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
     val isActive = clientState is ClientState.Running || clientState is ClientState.Starting
@@ -382,7 +396,9 @@ fun MSightScreen(
             warningVisible = warningVisible,
             warningResetKey = warningResetKey,
             latestSdsmEvent = latestSdsmEvent,
+            isMuted = isMuted,
             onStop = onStop,
+            onToggleMute = onToggleMute,
             onDismissWarning = onDismissWarning
         )
     } else {
@@ -574,18 +590,39 @@ private fun ActiveMapScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    isMuted: Boolean,
     onStop: () -> Unit,
+    onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
     var sdsmFilter by remember { mutableStateOf(SdsmFilter.OUSTER) }
     val markerCache = remember { HashMap<String, BitmapDescriptor>() }
+    val coroutineScope = rememberCoroutineScope()
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 5f)
     }
 
     var hasInitialLocation by remember { mutableStateOf(false) }
+    // Whether the camera is locked to follow the device position
+    var isFollowingLocation by remember { mutableStateOf(true) }
+    // The most recent GPS fix — used to re-center on button tap
+    var lastKnownLatLng by remember { mutableStateOf<LatLng?>(null) }
+    // True while we are programmatically animating the camera
+    var isCameraAnimating by remember { mutableStateOf(false) }
+
+    // Observe camera movement in one persistent coroutine.
+    // When the camera starts moving and WE did NOT start it, the user panned/zoomed —
+    // stop following so the camera stays where the user left it.
+    LaunchedEffect(Unit) {
+        snapshotFlow { cameraPositionState.isMoving }
+            .collect { isMoving ->
+                if (isMoving && !isCameraAnimating) {
+                    isFollowingLocation = false
+                }
+            }
+    }
 
     // Stable map: objectID -> (LatLng, SdsmDetectedObject) — updated in-place to avoid marker flash
     val objectPositions = remember { mutableStateMapOf<Int, Pair<LatLng, SdsmDetectedObject>>() }
@@ -644,11 +681,18 @@ private fun ActiveMapScreen(
     LaunchedEffect(latestLocation) {
         latestLocation?.let { loc ->
             val latLng = LatLng(loc.latitude, loc.longitude)
+            lastKnownLatLng = latLng
             if (!hasInitialLocation) {
+                // First fix: always jump to device location regardless of follow state
                 hasInitialLocation = true
+                isCameraAnimating = true
                 cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(latLng, 20f))
-            } else {
+                isCameraAnimating = false
+            } else if (isFollowingLocation) {
+                // Subsequent fixes: only move if we are in follow mode
+                isCameraAnimating = true
                 cameraPositionState.animate(CameraUpdateFactory.newLatLng(latLng))
+                isCameraAnimating = false
             }
         }
     }
@@ -673,11 +717,12 @@ private fun ActiveMapScreen(
                 key(id) {
                     val markerState = remember { MarkerState(position = entryLatLng) }
                     SideEffect { markerState.position = entryLatLng }
-                    val headingBucket = (entryObj.heading / 10.0).toInt() * 10.0
-                    val cacheKey = "${entryObj.objectType}_$headingBucket"
+                    // val headingBucket = (entryObj.heading / 10.0).toInt() * 10.0
+                    // val cacheKey = "${entryObj.objectType}_$headingBucket"
+                    val cacheKey = entryObj.objectType
                     val markerIcon = markerCache.getOrPut(cacheKey) {
                         BitmapDescriptorFactory.fromBitmap(
-                            createObjectMarkerBitmap(entryObj.objectType, headingBucket)
+                            createObjectMarkerBitmap(entryObj.objectType, 0.0) // heading rendering disabled
                         )
                     }
                     Marker(
@@ -734,6 +779,18 @@ private fun ActiveMapScreen(
                     fontWeight = FontWeight.Bold
                 )
             }
+            // Mute / unmute button
+            FloatingActionButton(
+                onClick = onToggleMute,
+                containerColor = if (isMuted) Color(0xFF616161) else Color(0xFF1976D2),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = if (isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
+                    tint = Color.White
+                )
+            }
         }
 
         // Bottom-center STOP button
@@ -761,6 +818,41 @@ private fun ActiveMapScreen(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 3.sp
+                )
+            }
+        }
+
+        // Re-center button — fades in at bottom-right when the user has panned/zoomed away
+        AnimatedVisibility(
+            visible = !isFollowingLocation && hasInitialLocation,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(bottom = 100.dp, end = 16.dp),
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(220))
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    isFollowingLocation = true
+                    lastKnownLatLng?.let { latLng ->
+                        coroutineScope.launch {
+                            isCameraAnimating = true
+                            cameraPositionState.animate(
+                                CameraUpdateFactory.newLatLng(latLng),
+                                durationMs = 600
+                            )
+                            isCameraAnimating = false
+                        }
+                    }
+                },
+                containerColor = Color.White,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.GpsFixed,
+                    contentDescription = "Re-center to my location",
+                    tint = Color(0xFF1976D2)
                 )
             }
         }
@@ -1138,29 +1230,29 @@ private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitma
     paint.strokeWidth = 3f
     canvas.drawCircle(cx, cy, radius, paint)
 
-    // White direction arrow pointing in heading direction (0° = north)
-    paint.style = Paint.Style.FILL
-    val headingRad = Math.toRadians(heading)
-    val tipDist = radius * 0.72f
-    val tipX = cx + (tipDist * sin(headingRad)).toFloat()
-    val tipY = cy - (tipDist * cos(headingRad)).toFloat()
-    val baseDist = radius * 0.25f
-    val baseX = cx - (baseDist * sin(headingRad)).toFloat()
-    val baseY = cy + (baseDist * cos(headingRad)).toFloat()
-    val halfBase = radius * 0.28f
-    val perpRad = headingRad + Math.PI / 2
-    val path = Path()
-    path.moveTo(tipX, tipY)
-    path.lineTo(
-        baseX + (halfBase * sin(perpRad)).toFloat(),
-        baseY - (halfBase * cos(perpRad)).toFloat()
-    )
-    path.lineTo(
-        baseX - (halfBase * sin(perpRad)).toFloat(),
-        baseY + (halfBase * cos(perpRad)).toFloat()
-    )
-    path.close()
-    canvas.drawPath(path, paint)
+    // White direction arrow pointing in heading direction (0° = north) — commented out, location-only rendering
+    // paint.style = Paint.Style.FILL
+    // val headingRad = Math.toRadians(heading)
+    // val tipDist = radius * 0.72f
+    // val tipX = cx + (tipDist * sin(headingRad)).toFloat()
+    // val tipY = cy - (tipDist * cos(headingRad)).toFloat()
+    // val baseDist = radius * 0.25f
+    // val baseX = cx - (baseDist * sin(headingRad)).toFloat()
+    // val baseY = cy + (baseDist * cos(headingRad)).toFloat()
+    // val halfBase = radius * 0.28f
+    // val perpRad = headingRad + Math.PI / 2
+    // val path = Path()
+    // path.moveTo(tipX, tipY)
+    // path.lineTo(
+    //     baseX + (halfBase * sin(perpRad)).toFloat(),
+    //     baseY - (halfBase * cos(perpRad)).toFloat()
+    // )
+    // path.lineTo(
+    //     baseX - (halfBase * sin(perpRad)).toFloat(),
+    //     baseY + (halfBase * cos(perpRad)).toFloat()
+    // )
+    // path.close()
+    // canvas.drawPath(path, paint)
 
     return bitmap
 }
