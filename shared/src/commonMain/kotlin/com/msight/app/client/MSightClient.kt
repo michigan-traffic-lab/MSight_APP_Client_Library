@@ -529,9 +529,9 @@ private class MSightSignalProcessor(
     private var loadedMaps: List<MSightIntersectionMap> = emptyList()
     private var activeApproach: ApproachResult? = null
     private var latestSpatEvent: MSightSpatEvent? = null
-    private var hasCrossedStopLine = false
     private var pendingApproach: ApproachResult? = null
     private var pendingFrames = 0
+    private var nullResultFrames = 0
     private var lastEmitMillis = 0L
     private var hideJob: Job? = null
 
@@ -544,16 +544,25 @@ private class MSightSignalProcessor(
 
         println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(locationEvent.latitude, locationEvent.longitude))
 
-        val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
-        val knownApproach = result ?: activeApproach
+        val rawResult = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
+        // Post-filter: suppress detector result if vehicle is already past this arm's stop line.
+        // This prevents jitter arms (wrong match for one frame) from falsely triggering a crossing,
+        // and stops IDLE→IDLE spam after the vehicle has cleared the intersection.
+        val result = if (rawResult != null) {
+            val sd = computeSignedApproachDist(locationEvent, rawResult)
+            if (sd >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
+                println("INFO: SignalProcessor suppressed arm=${rawResult.arm.armId} signedDist=%.1fm (past stop line)".format(sd))
+                null
+            } else rawResult
+        } else null
 
-        // Crossing check runs in both IDLE and ACTIVE so the vehicle passing the stop line
-        // is always detected, even when no SPaT has arrived (IDLE state).
+        // Crossing check uses activeApproach (hysteresis-stable) so a single jitter frame
+        // in the raw detector cannot falsely trigger a crossing for the wrong arm.
+        val knownApproach = activeApproach ?: result
         if (knownApproach != null) {
             val signedDist = computeSignedApproachDist(locationEvent, knownApproach)
             println("INFO: SignalProcessor signedDist=%.1fm threshold=%.1fm arm=%d".format(signedDist, STOP_LINE_CROSSED_THRESHOLD_METERS, knownApproach.arm.armId))
             if (signedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
-                hasCrossedStopLine = true
                 println("INFO: SignalProcessor crossed stop line, transitioning state=$displayState→${if (displayState == DisplayState.ACTIVE) "HIDING" else "IDLE"}")
                 if (displayState == DisplayState.ACTIVE) startHiding() else clearState()
                 return
@@ -580,6 +589,7 @@ private class MSightSignalProcessor(
             }
             DisplayState.ACTIVE -> {
                 if (result != null) {
+                    nullResultFrames = 0
                     val current = activeApproach
                     if (current == null || result.arm.armId == current.arm.armId) {
                         // Same arm — accept immediately, discard any pending candidate.
@@ -607,7 +617,12 @@ private class MSightSignalProcessor(
                         emitSignalState(locationEvent.timestampMillis, stableApproach, spat, force = false)
                     }
                 } else {
-                    if (hasCrossedStopLine) startHiding() else clearAndReset()
+                    nullResultFrames++
+                    println("INFO: SignalProcessor result=null in ACTIVE nullFrames=$nullResultFrames/${APPROACH_SWITCH_MIN_FRAMES}")
+                    if (nullResultFrames >= APPROACH_SWITCH_MIN_FRAMES) {
+                        nullResultFrames = 0
+                        clearAndReset()
+                    }
                 }
             }
             DisplayState.HIDING -> Unit
@@ -680,9 +695,9 @@ private class MSightSignalProcessor(
         displayState = DisplayState.IDLE
         activeApproach = null
         latestSpatEvent = null
-        hasCrossedStopLine = false
         pendingApproach = null
         pendingFrames = 0
+        nullResultFrames = 0
         lastEmitMillis = 0L
     }
 
