@@ -540,30 +540,45 @@ private class MSightSignalProcessor(
     }
 
     fun onLocation(locationEvent: MSightLocationEvent, history: List<MSightTrajectoryPoint>) {
+        if (displayState == DisplayState.HIDING) return
+
+        println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(locationEvent.latitude, locationEvent.longitude))
+
+        val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
+        val knownApproach = result ?: activeApproach
+
+        // Crossing check runs in both IDLE and ACTIVE so the vehicle passing the stop line
+        // is always detected, even when no SPaT has arrived (IDLE state).
+        if (knownApproach != null) {
+            val signedDist = computeSignedApproachDist(locationEvent, knownApproach)
+            println("INFO: SignalProcessor signedDist=%.1fm threshold=%.1fm arm=%d".format(signedDist, STOP_LINE_CROSSED_THRESHOLD_METERS, knownApproach.arm.armId))
+            if (signedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
+                hasCrossedStopLine = true
+                println("INFO: SignalProcessor crossed stop line, transitioning state=$displayState→${if (displayState == DisplayState.ACTIVE) "HIDING" else "IDLE"}")
+                if (displayState == DisplayState.ACTIVE) startHiding() else clearState()
+                return
+            }
+        }
+
         when (displayState) {
             DisplayState.IDLE -> {
-                val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
                 if (result != null) {
                     activeApproach = result
+                    displayState = DisplayState.ACTIVE
                     val spat = latestSpatEvent
                     if (spat != null) {
-                        displayState = DisplayState.ACTIVE
                         emitSignalState(locationEvent.timestampMillis, result, spat, force = true)
+                    } else {
+                        onSignalState(MSightSignalStateEvent(
+                            timestampMillis = locationEvent.timestampMillis,
+                            intersectionName = result.intersection.name,
+                            straightColor = SignalColor.UNKNOWN,
+                            leftTurnColor = SignalColor.UNKNOWN
+                        ))
                     }
                 }
             }
             DisplayState.ACTIVE -> {
-                val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
-                // Use the latest known approach for the crossing check even if detection just dropped.
-                val knownApproach = result ?: activeApproach
-                if (knownApproach != null) {
-                    val signedDist = computeSignedApproachDist(locationEvent, knownApproach)
-                    if (signedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
-                        hasCrossedStopLine = true
-                        startHiding()
-                        return
-                    }
-                }
                 if (result != null) {
                     val current = activeApproach
                     if (current == null || result.arm.armId == current.arm.armId) {
@@ -606,13 +621,8 @@ private class MSightSignalProcessor(
 
         latestSpatEvent = spatEvent
 
-        when (displayState) {
-            DisplayState.IDLE -> {
-                displayState = DisplayState.ACTIVE
-                emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = true)
-            }
-            DisplayState.ACTIVE -> emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = false)
-            DisplayState.HIDING -> Unit
+        if (displayState == DisplayState.ACTIVE) {
+            emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = true)
         }
     }
 
@@ -908,7 +918,7 @@ private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
 private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 10.0
 private const val APPROACH_SWITCH_MIN_FRAMES = 3
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
-private const val POST_PASS_HIDE_DELAY_MILLIS = 2_000L
+private const val POST_PASS_HIDE_DELAY_MILLIS = 1_000L
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
