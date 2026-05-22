@@ -578,11 +578,15 @@ private class MSightSignalProcessor(
                     if (spat != null) {
                         emitSignalState(locationEvent.timestampMillis, result, spat, force = true)
                     } else {
+                        val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
                         onSignalState(MSightSignalStateEvent(
                             timestampMillis = locationEvent.timestampMillis,
                             intersectionName = result.intersection.name,
                             straightColor = SignalColor.UNKNOWN,
-                            leftTurnColor = SignalColor.UNKNOWN
+                            leftTurnColor = SignalColor.UNKNOWN,
+                            showSingleLight = totalGroups <= 1,
+                            straightSignalGroupIds = result.arm.straightSignalGroups.sorted(),
+                            leftTurnSignalGroupIds = result.arm.leftTurnSignalGroups.sorted()
                         ))
                     }
                 }
@@ -661,7 +665,9 @@ private class MSightSignalProcessor(
             intersectionName = result.intersection.name,
             straightColor = colors.straightColor,
             leftTurnColor = colors.leftTurnColor,
-            showSingleLight = totalGroups <= 1
+            showSingleLight = totalGroups <= 1,
+            straightSignalGroupIds = result.arm.straightSignalGroups.sorted(),
+            leftTurnSignalGroupIds = result.arm.leftTurnSignalGroups.sorted()
         ))
     }
 

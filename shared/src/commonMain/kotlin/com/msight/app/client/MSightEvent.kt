@@ -111,5 +111,9 @@ data class MSightSignalStateEvent(
     val straightColor: SignalColor,
     val leftTurnColor: SignalColor,
     /** true when the arm has exactly one total signal group covering all movements */
-    val showSingleLight: Boolean = false
+    val showSingleLight: Boolean = false,
+    /** Signal group IDs for the straight movement on the matched arm (empty when no arm matched) */
+    val straightSignalGroupIds: List<Int> = emptyList(),
+    /** Signal group IDs for the left-turn movement on the matched arm (empty when no arm matched) */
+    val leftTurnSignalGroupIds: List<Int> = emptyList()
 ) : MSightEvent(timestampMillis)

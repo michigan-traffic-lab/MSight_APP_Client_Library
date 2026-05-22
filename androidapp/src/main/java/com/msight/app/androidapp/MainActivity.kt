@@ -152,6 +152,8 @@ class MainActivity : ComponentActivity() {
     private var straightSignalColor by mutableStateOf(SignalColor.UNKNOWN)
     private var leftSignalColor by mutableStateOf(SignalColor.UNKNOWN)
     private var showSingleLight by mutableStateOf(false)
+    private var straightGroupIds by mutableStateOf<List<Int>>(emptyList())
+    private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -188,6 +190,8 @@ class MainActivity : ComponentActivity() {
                         straightSignalColor = straightSignalColor,
                         leftSignalColor = leftSignalColor,
                         showSingleLight = showSingleLight,
+                        straightGroupIds = straightGroupIds,
+                        leftGroupIds = leftGroupIds,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
                         onDismissWarning = {
@@ -270,6 +274,8 @@ class MainActivity : ComponentActivity() {
                                 straightSignalColor = event.straightColor
                                 leftSignalColor = event.leftTurnColor
                                 showSingleLight = event.showSingleLight
+                                straightGroupIds = event.straightSignalGroupIds
+                                leftGroupIds = event.leftTurnSignalGroupIds
                             }
 
                             else -> {
@@ -308,6 +314,8 @@ class MainActivity : ComponentActivity() {
                 straightSignalColor = SignalColor.UNKNOWN
                 leftSignalColor = SignalColor.UNKNOWN
                 showSingleLight = false
+                straightGroupIds = emptyList()
+                leftGroupIds = emptyList()
             }
         }
     }
@@ -383,6 +391,8 @@ fun MSightScreen(
     straightSignalColor: SignalColor,
     leftSignalColor: SignalColor,
     showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
@@ -410,6 +420,8 @@ fun MSightScreen(
             straightSignalColor = straightSignalColor,
             leftSignalColor = leftSignalColor,
             showSingleLight = showSingleLight,
+            straightGroupIds = straightGroupIds,
+            leftGroupIds = leftGroupIds,
             onStop = onStop,
             onDismissWarning = onDismissWarning
         )
@@ -591,6 +603,8 @@ private fun ActiveMapScreen(
     straightSignalColor: SignalColor,
     leftSignalColor: SignalColor,
     showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>,
     onStop: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
@@ -807,7 +821,9 @@ private fun ActiveMapScreen(
                     intersectionName = activeIntersectionName,
                     straightColor = straightSignalColor,
                     leftColor = leftSignalColor,
-                    showSingleLight = showSingleLight
+                    showSingleLight = showSingleLight,
+                    straightGroupIds = straightGroupIds,
+                    leftGroupIds = leftGroupIds
                 )
             }
         }
@@ -1159,7 +1175,9 @@ private fun SignalOverlay(
     intersectionName: String,
     straightColor: SignalColor,
     leftColor: SignalColor,
-    showSingleLight: Boolean
+    showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xE6000000)),
@@ -1180,11 +1198,12 @@ private fun SignalOverlay(
             )
             if (showSingleLight) {
                 val singleColor = if (straightColor != SignalColor.UNKNOWN) straightColor else leftColor
-                SignalLight(color = singleColor)
+                val singleIds = if (straightGroupIds.isNotEmpty()) straightGroupIds else leftGroupIds
+                SignalLight(color = singleColor, groupIds = singleIds)
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
-                    SignalLight(color = leftColor)
-                    SignalLight(color = straightColor)
+                    SignalLight(color = leftColor, groupIds = leftGroupIds)
+                    SignalLight(color = straightColor, groupIds = straightGroupIds)
                 }
             }
         }
@@ -1192,14 +1211,29 @@ private fun SignalOverlay(
 }
 
 @Composable
-private fun SignalLight(color: SignalColor) {
+private fun SignalLight(color: SignalColor, groupIds: List<Int> = emptyList()) {
     Box(
-        modifier = Modifier
-            .size(60.dp)
-            .clip(CircleShape)
-            .background(color.toComposeColor())
-            .border(2.dp, Color.White.copy(alpha = 0.3f), CircleShape)
-    )
+        modifier = Modifier.size(60.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        // Circle drawn first (bottom layer)
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(CircleShape)
+                .background(color.toComposeColor())
+                .border(2.dp, Color.White.copy(alpha = 0.3f), CircleShape)
+        )
+        // Text drawn second (top layer), guaranteed above the circle
+        if (color == SignalColor.UNKNOWN && groupIds.isNotEmpty()) {
+            Text(
+                text = groupIds.joinToString(","),
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
 }
 
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
