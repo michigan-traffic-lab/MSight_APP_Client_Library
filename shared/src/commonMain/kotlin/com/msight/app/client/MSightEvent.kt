@@ -97,12 +97,6 @@ data class MSightVehicleVRUConflictEvent(
     pretSeconds = pretSeconds
 )
 
-data class MSightMapLoadedEvent(
-    override val timestampMillis: Long,
-    override val eventId: String? = null,
-    val maps: List<MSightIntersectionMap>
-) : MSightEvent(timestampMillis)
-
 data class MSightSignalStateEvent(
     override val timestampMillis: Long,
     override val eventId: String? = null,

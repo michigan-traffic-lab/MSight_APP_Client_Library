@@ -96,6 +96,30 @@ class MSightClient(
     val events: SharedFlow<MSightEvent> = _events.asSharedFlow()
     val locationHistory: List<MSightTrajectoryPoint> get() = _locationHistory.toList()
 
+    suspend fun loadMapsByLocation(
+        lat: Double,
+        lon: Double,
+        radiusMeters: Int = MAP_FETCH_RADIUS_METERS
+    ): List<MSightIntersectionMap> {
+        val baseUrl = config.cloudUrl.trimEnd('/')
+        return runCatching {
+            fetchMapsByLocation(httpClient, baseUrl, lat, lon, radiusMeters)
+        }.getOrElse { throwable ->
+            logError("loadMapsByLocation failed: ${describeThrowable(throwable)}")
+            emptyList()
+        }
+    }
+
+    suspend fun loadMapsByName(intersectionName: String): List<MSightIntersectionMap> {
+        val baseUrl = config.cloudUrl.trimEnd('/')
+        return runCatching {
+            fetchMapsByName(httpClient, baseUrl, intersectionName)
+        }.getOrElse { throwable ->
+            logError("loadMapsByName failed: ${describeThrowable(throwable)}")
+            emptyList()
+        }
+    }
+
     init {
         runBlocking {
             initialize()
@@ -120,10 +144,6 @@ class MSightClient(
             scope = scope,
             onMapsLoaded = { maps ->
                 initializedSignalProcessor.onMapsLoaded(maps)
-                _events.tryEmit(MSightMapLoadedEvent(
-                    timestampMillis = currentTimeMillis(),
-                    maps = maps
-                ))
             }
         )
 
@@ -474,7 +494,7 @@ private class MSightMapLoader(
     private val scope: CoroutineScope,
     private val onMapsLoaded: (List<MSightIntersectionMap>) -> Unit
 ) {
-    private val mapSearchUrl = config.cloudUrl.trimEnd('/') + MAP_SEARCH_PATH
+    private val baseUrl = config.cloudUrl.trimEnd('/')
     private var lastFetchLat: Double? = null
     private var lastFetchLon: Double? = null
     private var loadedMapCenters: List<Pair<Double, Double>> = emptyList()
@@ -500,14 +520,12 @@ private class MSightMapLoader(
         }
         lastFetchLat = lat
         lastFetchLon = lon
-        scope.launch { fetchAndEmit(lat, lon) }
+        scope.launch { fetchAndNotify(lat, lon) }
     }
 
-    private suspend fun fetchAndEmit(lat: Double, lon: Double) {
+    private suspend fun fetchAndNotify(lat: Double, lon: Double) {
         runCatching {
-            val url = "$mapSearchUrl?lat=$lat&lon=$lon&radius=$MAP_FETCH_RADIUS_METERS"
-            val response = client.get(url)
-            parseMapsResponse(response.bodyAsText())
+            fetchMapsByLocation(client, baseUrl, lat, lon, MAP_FETCH_RADIUS_METERS)
         }.onSuccess { maps ->
             if (maps.isNotEmpty()) {
                 loadedMapCenters = maps.map { it.centerLat to it.centerLon }
@@ -932,6 +950,7 @@ private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
 private const val SPAT_MESSAGE_TYPE = "spat"
 private const val MAP_SEARCH_PATH = "/v1/maps/search"
+private const val MAP_BY_NAME_PATH = "/v1/maps/"
 private const val MAP_FETCH_RADIUS_METERS = 150
 private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
@@ -1124,13 +1143,40 @@ private fun parseDetectedObject(entry: JsonObject): SdsmDetectedObject? {
     }
 }
 
+// ── Map fetch ────────────────────────────────────────────────────────────────
+
+private suspend fun fetchMapsByLocation(
+    client: HttpClient,
+    baseUrl: String,
+    lat: Double,
+    lon: Double,
+    radiusMeters: Int
+): List<MSightIntersectionMap> {
+    val url = "$baseUrl$MAP_SEARCH_PATH?lat=$lat&lon=$lon&radius=$radiusMeters"
+    val response = client.get(url)
+    return parseMapsResponse(response.bodyAsText())
+}
+
+private suspend fun fetchMapsByName(
+    client: HttpClient,
+    baseUrl: String,
+    intersectionName: String
+): List<MSightIntersectionMap> {
+    val url = "$baseUrl$MAP_BY_NAME_PATH$intersectionName"
+    val response = client.get(url)
+    return parseMapsResponse(response.bodyAsText())
+}
+
 // ── Map parsing ──────────────────────────────────────────────────────────────
 
 private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
     if (!looksLikeJsonObject(body)) return emptyList()
     return try {
         val root = lenientJson.parseToJsonElement(body).jsonObject
-        root["maps"]?.jsonArray?.mapNotNull { parseMapEntry(it.jsonObject) } ?: emptyList()
+        // Array envelope (location search): {"maps": [...]}
+        // Single-object fallback (name search): the root object is the map entry directly
+        root["maps"]?.jsonArray?.mapNotNull { parseMapEntry(it.jsonObject) }
+            ?: listOfNotNull(parseMapEntry(root))
     } catch (e: Exception) {
         logError("parseMapsResponse failed: ${describeThrowable(e)}")
         emptyList()
