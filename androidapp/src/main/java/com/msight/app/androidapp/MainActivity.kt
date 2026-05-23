@@ -104,7 +104,6 @@ import com.msight.app.client.MSightClient
 import com.msight.app.client.MSightClientConfig
 import com.msight.app.client.MSightDeviceType
 import com.msight.app.client.MSightLocationEvent
-import com.msight.app.client.MSightMapLoadedEvent
 import com.msight.app.client.MSightRoadUserType
 import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
@@ -154,6 +153,7 @@ class MainActivity : ComponentActivity() {
     private var showSingleLight by mutableStateOf(false)
     private var straightGroupIds by mutableStateOf<List<Int>>(emptyList())
     private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
+    private var showSpatOverlay by mutableStateOf(false)
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -192,8 +192,13 @@ class MainActivity : ComponentActivity() {
                         showSingleLight = showSingleLight,
                         straightGroupIds = straightGroupIds,
                         leftGroupIds = leftGroupIds,
+                        showSpatOverlay = showSpatOverlay,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
+                        onSpatToggle = { enabled ->
+                            showSpatOverlay = enabled
+                            activeClient?.setSpatEnabled(enabled)
+                        },
                         onDismissWarning = {
                             warningVisible = false
                             currentWarningEventId = null
@@ -265,10 +270,6 @@ class MainActivity : ComponentActivity() {
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
 
-                            is MSightMapLoadedEvent -> {
-                                Log.d("MSight-MAP", "Loaded ${event.maps.size} map(s): ${event.maps.map { it.name }}")
-                            }
-
                             is MSightSignalStateEvent -> {
                                 activeIntersectionName = event.intersectionName
                                 straightSignalColor = event.straightColor
@@ -286,6 +287,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 client.start()
+                client.setSpatEnabled(showSpatOverlay)
                 clientState = ClientState.Running(config)
             } catch (e: Exception) {
                 Log.e("MSight", "Failed to start MSightClient: $e")
@@ -393,8 +395,10 @@ fun MSightScreen(
     showSingleLight: Boolean,
     straightGroupIds: List<Int>,
     leftGroupIds: List<Int>,
+    showSpatOverlay: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
+    onSpatToggle: (Boolean) -> Unit,
     onDismissWarning: () -> Unit
 ) {
     val isActive = clientState is ClientState.Running || clientState is ClientState.Starting
@@ -422,7 +426,9 @@ fun MSightScreen(
             showSingleLight = showSingleLight,
             straightGroupIds = straightGroupIds,
             leftGroupIds = leftGroupIds,
+            showSpatOverlay = showSpatOverlay,
             onStop = onStop,
+            onSpatToggle = onSpatToggle,
             onDismissWarning = onDismissWarning
         )
     } else {
@@ -605,7 +611,9 @@ private fun ActiveMapScreen(
     showSingleLight: Boolean,
     straightGroupIds: List<Int>,
     leftGroupIds: List<Int>,
+    showSpatOverlay: Boolean,
     onStop: () -> Unit,
+    onSpatToggle: (Boolean) -> Unit,
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
@@ -722,6 +730,40 @@ private fun ActiveMapScreen(
             }
         }
 
+        // Top-left: SPaT display toggle
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 12.dp, start = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            FloatingActionButton(
+                onClick = { onSpatToggle(!showSpatOverlay) },
+                containerColor = if (showSpatOverlay) Color(0xFF2E7D32) else Color(0xFF607D8B),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "Nav",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (showSpatOverlay) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
         // Top-right floating button: Info toggle only
         Column(
             modifier = Modifier
@@ -809,8 +851,8 @@ private fun ActiveMapScreen(
             InfoPanel(clientState = clientState, latestLocation = latestLocation)
         }
 
-        // Signal light overlay — shown when approaching an intersection
-        if (activeIntersectionName != null) {
+        // Signal light overlay — shown when approaching an intersection and SPaT display is enabled
+        if (showSpatOverlay && activeIntersectionName != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)

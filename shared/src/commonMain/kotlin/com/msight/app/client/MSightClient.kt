@@ -217,6 +217,10 @@ class MSightClient(
         }
     }
 
+    fun setSpatEnabled(enabled: Boolean) {
+        signalProcessor?.setEnabled(enabled)
+    }
+
     fun close() {
         stop()
         scope.cancel()
@@ -552,12 +556,27 @@ private class MSightSignalProcessor(
     private var nullResultFrames = 0
     private var lastEmitMillis = 0L
     private var hideJob: Job? = null
+    private var enabled = false
+
+    fun setEnabled(enabled: Boolean) {
+        if (!enabled && this.enabled && displayState != DisplayState.IDLE) {
+            onSignalState(MSightSignalStateEvent(
+                timestampMillis = currentTimeMillis(),
+                intersectionName = null,
+                straightColor = SignalColor.UNKNOWN,
+                leftTurnColor = SignalColor.UNKNOWN
+            ))
+            clearState()
+        }
+        this.enabled = enabled
+    }
 
     fun onMapsLoaded(maps: List<MSightIntersectionMap>) {
         loadedMaps = maps
     }
 
     fun onLocation(locationEvent: MSightLocationEvent, history: List<MSightTrajectoryPoint>) {
+        if (!enabled) return
         if (displayState == DisplayState.HIDING) return
 
         println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(locationEvent.latitude, locationEvent.longitude))
@@ -652,6 +671,7 @@ private class MSightSignalProcessor(
     }
 
     fun onSpat(spatEvent: MSightSpatEvent) {
+        if (!enabled) return
         val name = spatEvent.intersectionName ?: return
         val approach = activeApproach ?: return
         if (name != approach.intersection.name) return
