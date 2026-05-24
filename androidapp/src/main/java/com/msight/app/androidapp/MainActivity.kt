@@ -282,8 +282,11 @@ class MainActivity : ComponentActivity() {
                                     latestSpatEvents[intName] = event
                                     if (!spatMapCache.containsKey(intName)) {
                                         spatMapCache[intName] = null
+                                        Log.d("MSight-SPAT-B", "Initiating map load for intName=$intName")
                                         lifecycleScope.launch(Dispatchers.IO) {
-                                            spatMapCache[intName] = client.loadMapsByName(intName).firstOrNull()
+                                            val result = client.loadMapsByName(intName).firstOrNull()
+                                            Log.d("MSight-SPAT-B", "Map load result for intName=$intName: ${result?.name ?: "null (no map)"}")
+                                            spatMapCache[intName] = result
                                         }
                                     }
                                 }
@@ -720,6 +723,15 @@ private fun ActiveMapScreen(
         }
     }
 
+    SideEffect {
+        val loadedMaps = spatMapCache.values.count { it != null }
+        Log.d("MSight-SPAT-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatEvents.size} loadedMaps=$loadedMaps")
+        latestSpatEvents.forEach { (name, _) ->
+            val m = spatMapCache[name]
+            Log.d("MSight-SPAT-B-UI", "  $name map=${m?.name ?: "null"} arms=${m?.arms?.size ?: 0}")
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
@@ -757,22 +769,20 @@ private fun ActiveMapScreen(
                 }
             }
 
-            // task_B: render signal color overlay for each ingress lane of known intersections
-            if (showSpatOverlay) {
-                latestSpatEvents.forEach { (name, spatEvent) ->
-                    val intMap = spatMapCache[name] ?: return@forEach
-                    val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
-                    intMap.arms.forEach { arm ->
-                        arm.ingressLanes.forEach { lane ->
-                            val corners = laneRectangleCorners(intMap.refPoint, lane) ?: return@forEach
-                            val color = laneSignalColor(lane, statesByGroup)
-                            Polygon(
-                                points = corners,
-                                fillColor = color.toMapOverlayColor(),
-                                strokeColor = color.toMapOverlayColor().copy(alpha = 0.9f),
-                                strokeWidth = 2f
-                            )
-                        }
+            // task_B: always render signal color overlay for each ingress lane of known intersections
+            latestSpatEvents.forEach forEachIntersection@{ (name, spatEvent) ->
+                val intMap = spatMapCache[name] ?: return@forEachIntersection
+                val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
+                intMap.arms.forEach { arm ->
+                    arm.ingressLanes.forEach forEachLane@{ lane ->
+                        val corners = laneRectangleCorners(intMap.refPoint, lane) ?: return@forEachLane
+                        val color = laneSignalColor(lane, statesByGroup)
+                        Polygon(
+                            points = corners,
+                            fillColor = color.toMapOverlayFill(),
+                            strokeColor = color.toMapOverlayStroke(),
+                            strokeWidth = 3f
+                        )
                     }
                 }
             }
@@ -1384,7 +1394,7 @@ private fun offsetToLatLng(ref: MapRefPoint, offsetX: Double, offsetY: Double): 
     return LatLng(lat, lon)
 }
 
-private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Double = 3.0): List<LatLng>? {
+private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Double = 1.5): List<LatLng>? {
     if (lane.nodes.size < 2) return null
     val p0 = lane.nodes[0]
     val p1 = lane.nodes[1]
@@ -1397,10 +1407,12 @@ private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Doubl
     val perpX = -dirY
     val perpY = dirX
     val halfW = lane.nodes[0].widthM / 2.0
+    // Rectangle extends toward refPoint (opposite to lane direction) from the stop-bar node,
+    // so p0 is the far edge and p0 - dir*height is the near edge (closer to intersection centre).
     return listOf(
         offsetToLatLng(ref, p0.offsetX + perpX * halfW,                    p0.offsetY + perpY * halfW),
-        offsetToLatLng(ref, p0.offsetX + dirX * heightM + perpX * halfW,   p0.offsetY + dirY * heightM + perpY * halfW),
-        offsetToLatLng(ref, p0.offsetX + dirX * heightM - perpX * halfW,   p0.offsetY + dirY * heightM - perpY * halfW),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM + perpX * halfW,   p0.offsetY - dirY * heightM + perpY * halfW),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM - perpX * halfW,   p0.offsetY - dirY * heightM - perpY * halfW),
         offsetToLatLng(ref, p0.offsetX - perpX * halfW,                    p0.offsetY - perpY * halfW)
     )
 }
@@ -1419,9 +1431,16 @@ private fun laneSignalColor(lane: MapLane, statesByGroup: Map<Int, SpatMovementS
         }
 }
 
-private fun SignalColor.toMapOverlayColor(): Color = when (this) {
-    SignalColor.GREEN   -> Color(0f, 0.78f, 0.32f, 0.6f)
-    SignalColor.YELLOW  -> Color(1f, 0.84f, 0f, 0.6f)
-    SignalColor.RED     -> Color(0.84f, 0f, 0f, 0.6f)
-    SignalColor.UNKNOWN -> Color(0.38f, 0.49f, 0.54f, 0.3f)
+private fun SignalColor.toMapOverlayFill(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0f, 0.85f, 0.38f, 0.50f)
+    SignalColor.YELLOW  -> Color(1f, 0.88f, 0f, 0.50f)
+    SignalColor.RED     -> Color(0.92f, 0.10f, 0.10f, 0.50f)
+    SignalColor.UNKNOWN -> Color(0.45f, 0.55f, 0.60f, 0.25f)
+}
+
+private fun SignalColor.toMapOverlayStroke(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0f, 0.90f, 0.42f, 1.00f)
+    SignalColor.YELLOW  -> Color(1f, 0.90f, 0f, 1.00f)
+    SignalColor.RED     -> Color(0.95f, 0.15f, 0.15f, 1.00f)
+    SignalColor.UNKNOWN -> Color(0.45f, 0.55f, 0.60f, 0.60f)
 }

@@ -1184,20 +1184,36 @@ private suspend fun fetchMapsByName(
     intersectionName: String
 ): List<MSightIntersectionMap> {
     val url = "$baseUrl$MAP_BY_NAME_PATH$intersectionName"
+    logInfo("fetchMapsByName requesting url=$url")
     val response = client.get(url)
-    return parseMapsResponse(response.bodyAsText())
+    val body = response.bodyAsText()
+    logInfo("fetchMapsByName status=${response.status} bodyPrefix=${body.take(300)}")
+    return parseMapsResponse(body)
 }
 
 // ── Map parsing ──────────────────────────────────────────────────────────────
 
 private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
-    if (!looksLikeJsonObject(body)) return emptyList()
+    val trimmed = body.trim()
+    if (trimmed.isEmpty()) return emptyList()
     return try {
-        val root = lenientJson.parseToJsonElement(body).jsonObject
-        // Array envelope (location search): {"maps": [...]}
-        // Single-object fallback (name search): the root object is the map entry directly
-        root["maps"]?.jsonArray?.mapNotNull { parseMapEntry(it.jsonObject) }
-            ?: listOfNotNull(parseMapEntry(root))
+        when {
+            trimmed.startsWith("[") -> {
+                // JSON array: [{...}, ...]
+                lenientJson.parseToJsonElement(trimmed).jsonArray
+                    .mapNotNull { parseMapEntry(it.jsonObject) }
+            }
+            trimmed.startsWith("{") -> {
+                val root = lenientJson.parseToJsonElement(trimmed).jsonObject
+                // {"maps": [...]} — location search
+                // {"status":"ok","map":{...}} — name lookup (singular "map" key)
+                // bare map object fallback
+                root["maps"]?.jsonArray?.mapNotNull { parseMapEntry(it.jsonObject) }
+                    ?: root["map"]?.jsonObject?.let { listOfNotNull(parseMapEntry(it)) }
+                    ?: listOfNotNull(parseMapEntry(root))
+            }
+            else -> emptyList()
+        }
     } catch (e: Exception) {
         logError("parseMapsResponse failed: ${describeThrowable(e)}")
         emptyList()
@@ -1206,10 +1222,12 @@ private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
 
 private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
     return try {
-        val dbId = entry["id"]?.jsonPrimitive?.intOrNull ?: return null
         val name = entry["name"]?.jsonPrimitive?.contentOrNull ?: return null
-        val centerLat = entry["center_lat"]?.jsonPrimitive?.doubleOrNull ?: return null
-        val centerLon = entry["center_lon"]?.jsonPrimitive?.doubleOrNull ?: return null
+        // Location-search format uses center_lat/center_lon; name-lookup format uses lat/lon
+        val centerLat = entry["center_lat"]?.jsonPrimitive?.doubleOrNull
+            ?: entry["lat"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val centerLon = entry["center_lon"]?.jsonPrimitive?.doubleOrNull
+            ?: entry["lon"]?.jsonPrimitive?.doubleOrNull ?: return null
 
         val data = entry["data"]?.jsonObject ?: return null
         val intersectionsArray = data["intersections"]?.jsonArray
@@ -1219,6 +1237,8 @@ private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
         val idObj = intersection["id"]?.jsonObject ?: return null
         val intersectionId = idObj["id"]?.jsonPrimitive?.intOrNull ?: return null
         val intersectionRegion = idObj["region"]?.jsonPrimitive?.intOrNull
+        // Name-lookup response has no root "id"; fall back to intersection id
+        val dbId = entry["id"]?.jsonPrimitive?.intOrNull ?: intersectionId
 
         val refPosObj = intersection["refPoint"]?.jsonObject ?: return null
         val refLat = refPosObj["lat"]?.jsonPrimitive?.doubleOrNull ?: return null
