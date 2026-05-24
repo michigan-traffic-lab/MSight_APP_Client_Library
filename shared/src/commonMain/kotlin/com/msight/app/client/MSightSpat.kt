@@ -43,6 +43,7 @@ data class SpatMovementState(
 
 /** A single intersection within the SPAT message. */
 data class SpatIntersection(
+    val name: String?,
     val id: SpatIntersectionId,
     val revision: Int,
     /** Bit-string status flags as a list of set-bit positions. */

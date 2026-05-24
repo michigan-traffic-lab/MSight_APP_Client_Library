@@ -11,10 +11,21 @@ data class MapLaneConnection(
     val signalGroup: Int
 )
 
-/** Meter offsets from the intersection refPoint — same convention as SdsmOffset (x=east, y=north). */
+/**
+ * Position of a single lane node relative to the intersection reference point.
+ *  - [offsetX]: metres east of refPoint
+ *  - [offsetY]: metres north of refPoint
+ *  - [widthM]: lane width in metres at this node, running total of
+ *    intersectionLaneWidth + all dWidth deltas up to and including this node.
+ *    Represents the width from this node to the next node along the lane.
+ *  - [elevationM]: absolute elevation in metres (refPoint.elevation + cumulative dElevation along
+ *    the lane up to this node); null when the intersection carries no elevation data.
+ */
 data class MapLaneNode(
     val offsetX: Double,
-    val offsetY: Double
+    val offsetY: Double,
+    val widthM: Double,
+    val elevationM: Double?
 )
 
 data class MapLane(
@@ -49,5 +60,7 @@ data class MSightIntersectionMap(
     val refPoint: MapRefPoint,
     val centerLat: Double,
     val centerLon: Double,
+    /** Default lane width in metres for this intersection; individual nodes may vary via dWidth. */
+    val laneWidthM: Double,
     val arms: List<MapArm>
 )

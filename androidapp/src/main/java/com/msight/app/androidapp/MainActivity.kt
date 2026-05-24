@@ -118,10 +118,16 @@ import java.util.Date
 import java.util.Locale
 import com.msight.app.client.MSightSignalStateEvent
 import com.msight.app.client.SignalColor
+import com.msight.app.client.MapRefPoint
+import com.msight.app.client.MapLane
+import com.msight.app.client.MSightIntersectionMap
+import com.msight.app.client.SpatMovementState
+import com.google.maps.android.compose.Polygon
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
@@ -154,6 +160,8 @@ class MainActivity : ComponentActivity() {
     private var straightGroupIds by mutableStateOf<List<Int>>(emptyList())
     private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
     private var showSpatOverlay by mutableStateOf(false)
+    private val spatMapCache = mutableStateMapOf<String, MSightIntersectionMap?>()
+    private val latestSpatEvents = mutableStateMapOf<String, MSightSpatEvent>()
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -193,6 +201,8 @@ class MainActivity : ComponentActivity() {
                         straightGroupIds = straightGroupIds,
                         leftGroupIds = leftGroupIds,
                         showSpatOverlay = showSpatOverlay,
+                        spatMapCache = spatMapCache,
+                        latestSpatEvents = latestSpatEvents,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
                         onSpatToggle = { enabled ->
@@ -267,6 +277,16 @@ class MainActivity : ComponentActivity() {
                             }
 
                             is MSightSpatEvent -> {
+                                val intName = event.intersectionName ?: event.intersection.name
+                                if (intName != null) {
+                                    latestSpatEvents[intName] = event
+                                    if (!spatMapCache.containsKey(intName)) {
+                                        spatMapCache[intName] = null
+                                        lifecycleScope.launch(Dispatchers.IO) {
+                                            spatMapCache[intName] = client.loadMapsByName(intName).firstOrNull()
+                                        }
+                                    }
+                                }
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
 
@@ -318,6 +338,8 @@ class MainActivity : ComponentActivity() {
                 showSingleLight = false
                 straightGroupIds = emptyList()
                 leftGroupIds = emptyList()
+                spatMapCache.clear()
+                latestSpatEvents.clear()
             }
         }
     }
@@ -396,6 +418,8 @@ fun MSightScreen(
     straightGroupIds: List<Int>,
     leftGroupIds: List<Int>,
     showSpatOverlay: Boolean,
+    spatMapCache: Map<String, MSightIntersectionMap?>,
+    latestSpatEvents: Map<String, MSightSpatEvent>,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
     onSpatToggle: (Boolean) -> Unit,
@@ -427,6 +451,8 @@ fun MSightScreen(
             straightGroupIds = straightGroupIds,
             leftGroupIds = leftGroupIds,
             showSpatOverlay = showSpatOverlay,
+            spatMapCache = spatMapCache,
+            latestSpatEvents = latestSpatEvents,
             onStop = onStop,
             onSpatToggle = onSpatToggle,
             onDismissWarning = onDismissWarning
@@ -612,6 +638,8 @@ private fun ActiveMapScreen(
     straightGroupIds: List<Int>,
     leftGroupIds: List<Int>,
     showSpatOverlay: Boolean,
+    spatMapCache: Map<String, MSightIntersectionMap?>,
+    latestSpatEvents: Map<String, MSightSpatEvent>,
     onStop: () -> Unit,
     onSpatToggle: (Boolean) -> Unit,
     onDismissWarning: () -> Unit
@@ -726,6 +754,26 @@ private fun ActiveMapScreen(
                         title = "${entryObj.objectType} #${entryObj.objectID}",
                         snippet = "spd=${entryObj.speed} hdg=${String.format(Locale.US, "%.1f", entryObj.heading)}°"
                     )
+                }
+            }
+
+            // task_B: render signal color overlay for each ingress lane of known intersections
+            if (showSpatOverlay) {
+                latestSpatEvents.forEach { (name, spatEvent) ->
+                    val intMap = spatMapCache[name] ?: return@forEach
+                    val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
+                    intMap.arms.forEach { arm ->
+                        arm.ingressLanes.forEach { lane ->
+                            val corners = laneRectangleCorners(intMap.refPoint, lane) ?: return@forEach
+                            val color = laneSignalColor(lane, statesByGroup)
+                            Polygon(
+                                points = corners,
+                                fillColor = color.toMapOverlayColor(),
+                                strokeColor = color.toMapOverlayColor().copy(alpha = 0.9f),
+                                strokeWidth = 2f
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1328,4 +1376,52 @@ private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitma
     canvas.drawPath(path, paint)
 
     return bitmap
+}
+
+private fun offsetToLatLng(ref: MapRefPoint, offsetX: Double, offsetY: Double): LatLng {
+    val lat = ref.lat + offsetY / 111320.0
+    val lon = ref.lon + offsetX / (111320.0 * cos(Math.toRadians(ref.lat)))
+    return LatLng(lat, lon)
+}
+
+private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Double = 3.0): List<LatLng>? {
+    if (lane.nodes.size < 2) return null
+    val p0 = lane.nodes[0]
+    val p1 = lane.nodes[1]
+    val dx = p1.offsetX - p0.offsetX
+    val dy = p1.offsetY - p0.offsetY
+    val len = sqrt(dx * dx + dy * dy)
+    if (len < 0.01) return null
+    val dirX = dx / len
+    val dirY = dy / len
+    val perpX = -dirY
+    val perpY = dirX
+    val halfW = lane.nodes[0].widthM / 2.0
+    return listOf(
+        offsetToLatLng(ref, p0.offsetX + perpX * halfW,                    p0.offsetY + perpY * halfW),
+        offsetToLatLng(ref, p0.offsetX + dirX * heightM + perpX * halfW,   p0.offsetY + dirY * heightM + perpY * halfW),
+        offsetToLatLng(ref, p0.offsetX + dirX * heightM - perpX * halfW,   p0.offsetY + dirY * heightM - perpY * halfW),
+        offsetToLatLng(ref, p0.offsetX - perpX * halfW,                    p0.offsetY - perpY * halfW)
+    )
+}
+
+private fun laneSignalColor(lane: MapLane, statesByGroup: Map<Int, SpatMovementState>): SignalColor {
+    return lane.connections
+        .mapNotNull { conn -> statesByGroup[conn.signalGroup]?.stateTimeSpeed?.firstOrNull()?.eventState }
+        .map { SignalColor.fromEventState(it) }
+        .fold(SignalColor.UNKNOWN) { best, color ->
+            when {
+                best == SignalColor.GREEN || color == SignalColor.GREEN -> SignalColor.GREEN
+                best == SignalColor.YELLOW || color == SignalColor.YELLOW -> SignalColor.YELLOW
+                best == SignalColor.RED || color == SignalColor.RED -> SignalColor.RED
+                else -> SignalColor.UNKNOWN
+            }
+        }
+}
+
+private fun SignalColor.toMapOverlayColor(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0f, 0.78f, 0.32f, 0.6f)
+    SignalColor.YELLOW  -> Color(1f, 0.84f, 0f, 0.6f)
+    SignalColor.RED     -> Color(0.84f, 0f, 0f, 0.6f)
+    SignalColor.UNKNOWN -> Color(0.38f, 0.49f, 0.54f, 0.3f)
 }

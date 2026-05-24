@@ -1083,6 +1083,7 @@ private fun parseSpatIntersection(obj: JsonObject): SpatIntersection? {
             ?: emptyList()
 
         SpatIntersection(
+            name = obj["name"]?.jsonPrimitive?.contentOrNull,
             id = intersectionId,
             revision = obj["revision"]?.jsonPrimitive?.intOrNull ?: 0,
             status = status,
@@ -1226,7 +1227,8 @@ private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
         val refPoint = MapRefPoint(refLat, refLon, refElev)
 
         val laneSet = intersection["laneSet"]?.jsonArray ?: return null
-        val lanes = laneSet.mapNotNull { parseMapLane(it.jsonObject) }
+        val intersectionLaneWidth = intersection["laneWidth"]?.jsonPrimitive?.doubleOrNull ?: 3.5
+        val lanes = laneSet.mapNotNull { parseMapLane(it.jsonObject, intersectionLaneWidth, refElev) }
 
         MSightIntersectionMap(
             dbId = dbId,
@@ -1236,6 +1238,7 @@ private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
             refPoint = refPoint,
             centerLat = centerLat,
             centerLon = centerLon,
+            laneWidthM = intersectionLaneWidth,
             arms = buildMapArms(lanes)
         )
     } catch (e: Exception) {
@@ -1244,7 +1247,7 @@ private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
     }
 }
 
-private fun parseMapLane(laneObj: JsonObject): MapLane? {
+private fun parseMapLane(laneObj: JsonObject, intersectionLaneWidth: Double, refElevationM: Double?): MapLane? {
     return try {
         // Skip crosswalks
         val laneType = laneObj["laneAttributes"]?.jsonObject
@@ -1263,6 +1266,8 @@ private fun parseMapLane(laneObj: JsonObject): MapLane? {
         val nodes = buildList {
             var cumX = 0.0
             var cumY = 0.0
+            var cumWidth = intersectionLaneWidth
+            var cumElev: Double? = refElevationM
             for (element in nodesArray) {
                 val nodeObj = element.jsonObject
                 val deltaArray = nodeObj["delta"]?.jsonArray ?: continue
@@ -1271,7 +1276,12 @@ private fun parseMapLane(laneObj: JsonObject): MapLane? {
                 val dy = xyObj["y"]?.jsonPrimitive?.doubleOrNull ?: continue
                 cumX += dx
                 cumY += dy
-                add(MapLaneNode(cumX, cumY))
+                val attrs = nodeObj["attributes"]?.jsonObject
+                val dWidth = attrs?.get("dWidth")?.jsonPrimitive?.doubleOrNull
+                if (dWidth != null) cumWidth += dWidth
+                val dElev = attrs?.get("dElevation")?.jsonPrimitive?.doubleOrNull
+                if (dElev != null) cumElev = (cumElev ?: 0.0) + dElev
+                add(MapLaneNode(cumX, cumY, cumWidth, cumElev))
             }
         }
 
