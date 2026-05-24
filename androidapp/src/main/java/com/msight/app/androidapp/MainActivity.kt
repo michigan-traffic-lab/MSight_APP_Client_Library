@@ -780,8 +780,8 @@ private fun ActiveMapScreen(
                         Polygon(
                             points = corners,
                             fillColor = color.toMapOverlayFill(),
-                            strokeColor = color.toMapOverlayStroke(),
-                            strokeWidth = 3f
+                            strokeColor = color.toMapOverlayFill(),
+                            strokeWidth = 0f
                         )
                     }
                 }
@@ -1438,9 +1438,3 @@ private fun SignalColor.toMapOverlayFill(): Color = when (this) {
     SignalColor.UNKNOWN -> Color(0.45f, 0.55f, 0.60f, 0.25f)
 }
 
-private fun SignalColor.toMapOverlayStroke(): Color = when (this) {
-    SignalColor.GREEN   -> Color(0f, 0.90f, 0.42f, 1.00f)
-    SignalColor.YELLOW  -> Color(1f, 0.90f, 0f, 1.00f)
-    SignalColor.RED     -> Color(0.95f, 0.15f, 0.15f, 1.00f)
-    SignalColor.UNKNOWN -> Color(0.45f, 0.55f, 0.60f, 0.60f)
-}
