@@ -1592,10 +1592,11 @@ private fun DrawScope.drawNeonStraightArrow(color: Color, withGlow: Boolean) {
     val cx = w / 2f
     val shaftBottom = h * 0.92f
     val shaftTop = h * 0.36f
-    // Tall, narrow arrowhead — half-angle ~33° (full tip ~66°) for a sharp point.
-    val tipY = h * 0.04f
-    val headBaseY = h * 0.44f
-    val headHalf = w * 0.22f
+    // Compact, narrow arrowhead — half-angle ~31° (full tip ~62°), about 30% smaller
+    // than the previous head in both width and height.
+    val tipY = h * 0.10f
+    val headBaseY = h * 0.40f
+    val headHalf = w * 0.18f
     val coreStroke = w * 0.20f
 
     val shaft = ComposePath().apply {
@@ -1624,12 +1625,12 @@ private fun DrawScope.drawNeonLeftArrow(color: Color, withGlow: Boolean) {
     val w = size.width
     val h = size.height
     val coreStroke = w * 0.18f
-    val rightX = w * 0.72f
+    val rightX = w * 0.78f         // shifted right within the canvas
     val bottomY = h * 0.88f
     val turnY = h * 0.22f          // higher in canvas than before
     val cornerR = w * 0.30f        // larger radius → smoother bend
-    val headBaseX = w * 0.22f
-    val tipX = w * 0.04f
+    val headBaseX = w * 0.28f      // shifted right with the rest of the shape
+    val tipX = w * 0.10f           // shifted right with the rest of the shape
     val headHalfY = h * 0.18f
 
     val shaft = ComposePath().apply {
