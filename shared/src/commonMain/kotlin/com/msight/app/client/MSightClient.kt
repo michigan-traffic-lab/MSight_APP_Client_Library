@@ -973,10 +973,10 @@ private const val MAP_FETCH_RADIUS_METERS = 150
 private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
-private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 3.0
+private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 2.0
 private const val APPROACH_SWITCH_MIN_FRAMES = 3
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
-private const val POST_PASS_HIDE_DELAY_MILLIS = 1_000L
+private const val POST_PASS_HIDE_DELAY_MILLIS = 500L
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 

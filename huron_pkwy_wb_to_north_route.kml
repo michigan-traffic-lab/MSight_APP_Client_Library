@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Huron Pkwy Westbound Right-Turn North</name>
+    <Placemark>
+      <name>Westbound on Huron Pkwy, right turn north at Huron-Plymouth intersection</name>
+      <gx:Track>
+        <!-- 1 Hz (1-second) steps, 84 points total (T=0..83) -->
+        <!-- Seg 1  (T=0-7):   start (42.302774,-83.701444) → WP1  (42.302715,-83.702166), 7  intervals @ ~8.5 m/s -->
+        <!-- Seg 2  (T=7-17):  WP1  → WP2  (42.302677,-83.703194), 10 intervals -->
+        <!-- Seg 3  (T=17-23): WP2  → WP3  (42.302666,-83.703778), 6  intervals -->
+        <!-- Seg 4  (T=23-26): WP3  → WP4  (42.302661,-83.704088), 3  intervals -->
+        <!-- Seg 5  (T=26-28): WP4  → WP5  (42.302662,-83.704181), 2  intervals (slowing for right turn) -->
+        <!-- Seg 6  (T=28-30): WP5  → WP6  (42.302677,-83.704259), 2  intervals (right turn) -->
+        <!-- Seg 7  (T=30-31): WP6  → WP7  (42.302715,-83.704301), 1  interval  (right turn) -->
+        <!-- Seg 8  (T=31-33): WP7  → WP8  (42.302778,-83.704307), 2  intervals (completing right turn) -->
+        <!-- Seg 9  (T=33-36): WP8  → WP9  (42.302969,-83.704309), 3  intervals (accelerating north) -->
+        <!-- Seg 10 (T=36-39): WP9  → WP10 (42.303134,-83.704333), 3  intervals -->
+        <!-- Seg 11 (T=39-42): WP10 → WP11 (42.303315,-83.704385), 3  intervals -->
+        <!-- Seg 12 (T=42-46): WP11 → WP12 (42.303568,-83.704508), 4  intervals -->
+        <!-- Seg 13 (T=46-50): WP12 → WP13 (42.303805,-83.704703), 4  intervals -->
+        <!-- Seg 14 (T=50-54): WP13 → WP14 (42.304025,-83.704951), 4  intervals -->
+        <!-- Seg 15 (T=54-60): WP14 → WP15 (42.304305,-83.705369), 6  intervals -->
+        <!-- Seg 16 (T=60-69): WP15 → WP16 (42.304735,-83.706032), 9  intervals -->
+        <!-- Seg 17 (T=69-72): WP16 → WP17 (42.304869,-83.706305), 3  intervals -->
+        <!-- Seg 18 (T=72-83): WP17 → end  (42.305194,-83.707329), 11 intervals -->
+        <when>2024-01-01T00:00:00Z</when>
+        <when>2024-01-01T00:00:01Z</when>
+        <when>2024-01-01T00:00:02Z</when>
+        <when>2024-01-01T00:00:03Z</when>
+        <when>2024-01-01T00:00:04Z</when>
+        <when>2024-01-01T00:00:05Z</when>
+        <when>2024-01-01T00:00:06Z</when>
+        <when>2024-01-01T00:00:07Z</when>
+        <when>2024-01-01T00:00:08Z</when>
+        <when>2024-01-01T00:00:09Z</when>
+        <when>2024-01-01T00:00:10Z</when>
+        <when>2024-01-01T00:00:11Z</when>
+        <when>2024-01-01T00:00:12Z</when>
+        <when>2024-01-01T00:00:13Z</when>
+        <when>2024-01-01T00:00:14Z</when>
+        <when>2024-01-01T00:00:15Z</when>
+        <when>2024-01-01T00:00:16Z</when>
+        <when>2024-01-01T00:00:17Z</when>
+        <when>2024-01-01T00:00:18Z</when>
+        <when>2024-01-01T00:00:19Z</when>
+        <when>2024-01-01T00:00:20Z</when>
+        <when>2024-01-01T00:00:21Z</when>
+        <when>2024-01-01T00:00:22Z</when>
+        <when>2024-01-01T00:00:23Z</when>
+        <when>2024-01-01T00:00:24Z</when>
+        <when>2024-01-01T00:00:25Z</when>
+        <when>2024-01-01T00:00:26Z</when>
+        <when>2024-01-01T00:00:27Z</when>
+        <when>2024-01-01T00:00:28Z</when>
+        <when>2024-01-01T00:00:29Z</when>
+        <when>2024-01-01T00:00:30Z</when>
+        <when>2024-01-01T00:00:31Z</when>
+        <when>2024-01-01T00:00:32Z</when>
+        <when>2024-01-01T00:00:33Z</when>
+        <when>2024-01-01T00:00:34Z</when>
+        <when>2024-01-01T00:00:35Z</when>
+        <when>2024-01-01T00:00:36Z</when>
+        <when>2024-01-01T00:00:37Z</when>
+        <when>2024-01-01T00:00:38Z</when>
+        <when>2024-01-01T00:00:39Z</when>
+        <when>2024-01-01T00:00:40Z</when>
+        <when>2024-01-01T00:00:41Z</when>
+        <when>2024-01-01T00:00:42Z</when>
+        <when>2024-01-01T00:00:43Z</when>
+        <when>2024-01-01T00:00:44Z</when>
+        <when>2024-01-01T00:00:45Z</when>
+        <when>2024-01-01T00:00:46Z</when>
+        <when>2024-01-01T00:00:47Z</when>
+        <when>2024-01-01T00:00:48Z</when>
+        <when>2024-01-01T00:00:49Z</when>
+        <when>2024-01-01T00:00:50Z</when>
+        <when>2024-01-01T00:00:51Z</when>
+        <when>2024-01-01T00:00:52Z</when>
+        <when>2024-01-01T00:00:53Z</when>
+        <when>2024-01-01T00:00:54Z</when>
+        <when>2024-01-01T00:00:55Z</when>
+        <when>2024-01-01T00:00:56Z</when>
+        <when>2024-01-01T00:00:57Z</when>
+        <when>2024-01-01T00:00:58Z</when>
+        <when>2024-01-01T00:00:59Z</when>
+        <when>2024-01-01T00:01:00Z</when>
+        <when>2024-01-01T00:01:01Z</when>
+        <when>2024-01-01T00:01:02Z</when>
+        <when>2024-01-01T00:01:03Z</when>
+        <when>2024-01-01T00:01:04Z</when>
+        <when>2024-01-01T00:01:05Z</when>
+        <when>2024-01-01T00:01:06Z</when>
+        <when>2024-01-01T00:01:07Z</when>
+        <when>2024-01-01T00:01:08Z</when>
+        <when>2024-01-01T00:01:09Z</when>
+        <when>2024-01-01T00:01:10Z</when>
+        <when>2024-01-01T00:01:11Z</when>
+        <when>2024-01-01T00:01:12Z</when>
+        <when>2024-01-01T00:01:13Z</when>
+        <when>2024-01-01T00:01:14Z</when>
+        <when>2024-01-01T00:01:15Z</when>
+        <when>2024-01-01T00:01:16Z</when>
+        <when>2024-01-01T00:01:17Z</when>
+        <when>2024-01-01T00:01:18Z</when>
+        <when>2024-01-01T00:01:19Z</when>
+        <when>2024-01-01T00:01:20Z</when>
+        <when>2024-01-01T00:01:21Z</when>
+        <when>2024-01-01T00:01:22Z</when>
+        <when>2024-01-01T00:01:23Z</when>
+
+        <!-- gx:coord order: longitude latitude altitude -->
+        <!-- Seg 1: start (42.302774,-83.701444) → WP1 (42.302715,-83.702166), 7 intervals -->
+        <gx:coord>-83.701444 42.302774 0</gx:coord>
+        <gx:coord>-83.701547 42.302766 0</gx:coord>
+        <gx:coord>-83.701650 42.302757 0</gx:coord>
+        <gx:coord>-83.701753 42.302749 0</gx:coord>
+        <gx:coord>-83.701857 42.302740 0</gx:coord>
+        <gx:coord>-83.701960 42.302732 0</gx:coord>
+        <gx:coord>-83.702063 42.302723 0</gx:coord>
+        <gx:coord>-83.702166 42.302715 0</gx:coord>
+        <!-- Seg 2: WP1 → WP2 (42.302677,-83.703194), 10 intervals -->
+        <gx:coord>-83.702269 42.302711 0</gx:coord>
+        <gx:coord>-83.702372 42.302707 0</gx:coord>
+        <gx:coord>-83.702474 42.302704 0</gx:coord>
+        <gx:coord>-83.702577 42.302700 0</gx:coord>
+        <gx:coord>-83.702680 42.302696 0</gx:coord>
+        <gx:coord>-83.702783 42.302692 0</gx:coord>
+        <gx:coord>-83.702886 42.302688 0</gx:coord>
+        <gx:coord>-83.702988 42.302685 0</gx:coord>
+        <gx:coord>-83.703091 42.302681 0</gx:coord>
+        <gx:coord>-83.703194 42.302677 0</gx:coord>
+        <!-- Seg 3: WP2 → WP3 (42.302666,-83.703778), 6 intervals -->
+        <gx:coord>-83.703291 42.302675 0</gx:coord>
+        <gx:coord>-83.703389 42.302673 0</gx:coord>
+        <gx:coord>-83.703486 42.302672 0</gx:coord>
+        <gx:coord>-83.703583 42.302670 0</gx:coord>
+        <gx:coord>-83.703681 42.302668 0</gx:coord>
+        <gx:coord>-83.703778 42.302666 0</gx:coord>
+        <!-- Seg 4: WP3 → WP4 (42.302661,-83.704088), 3 intervals -->
+        <gx:coord>-83.703881 42.302664 0</gx:coord>
+        <gx:coord>-83.703985 42.302663 0</gx:coord>
+        <gx:coord>-83.704088 42.302661 0</gx:coord>
+        <!-- Seg 5: WP4 → WP5 (42.302662,-83.704181), 2 intervals (slowing for right turn) -->
+        <gx:coord>-83.704135 42.302661 0</gx:coord>
+        <gx:coord>-83.704181 42.302662 0</gx:coord>
+        <!-- Seg 6: WP5 → WP6 (42.302677,-83.704259), 2 intervals (right turn) -->
+        <gx:coord>-83.704220 42.302670 0</gx:coord>
+        <gx:coord>-83.704259 42.302677 0</gx:coord>
+        <!-- Seg 7: WP6 → WP7 (42.302715,-83.704301), 1 interval (right turn) -->
+        <gx:coord>-83.704301 42.302715 0</gx:coord>
+        <!-- Seg 8: WP7 → WP8 (42.302778,-83.704307), 2 intervals (completing right turn) -->
+        <gx:coord>-83.704304 42.302746 0</gx:coord>
+        <gx:coord>-83.704307 42.302778 0</gx:coord>
+        <!-- Seg 9: WP8 → WP9 (42.302969,-83.704309), 3 intervals (accelerating north) -->
+        <gx:coord>-83.704308 42.302842 0</gx:coord>
+        <gx:coord>-83.704308 42.302905 0</gx:coord>
+        <gx:coord>-83.704309 42.302969 0</gx:coord>
+        <!-- Seg 10: WP9 → WP10 (42.303134,-83.704333), 3 intervals -->
+        <gx:coord>-83.704317 42.303024 0</gx:coord>
+        <gx:coord>-83.704325 42.303079 0</gx:coord>
+        <gx:coord>-83.704333 42.303134 0</gx:coord>
+        <!-- Seg 11: WP10 → WP11 (42.303315,-83.704385), 3 intervals -->
+        <gx:coord>-83.704350 42.303194 0</gx:coord>
+        <gx:coord>-83.704368 42.303255 0</gx:coord>
+        <gx:coord>-83.704385 42.303315 0</gx:coord>
+        <!-- Seg 12: WP11 → WP12 (42.303568,-83.704508), 4 intervals -->
+        <gx:coord>-83.704416 42.303378 0</gx:coord>
+        <gx:coord>-83.704447 42.303441 0</gx:coord>
+        <gx:coord>-83.704477 42.303505 0</gx:coord>
+        <gx:coord>-83.704508 42.303568 0</gx:coord>
+        <!-- Seg 13: WP12 → WP13 (42.303805,-83.704703), 4 intervals -->
+        <gx:coord>-83.704557 42.303627 0</gx:coord>
+        <gx:coord>-83.704605 42.303686 0</gx:coord>
+        <gx:coord>-83.704654 42.303746 0</gx:coord>
+        <gx:coord>-83.704703 42.303805 0</gx:coord>
+        <!-- Seg 14: WP13 → WP14 (42.304025,-83.704951), 4 intervals -->
+        <gx:coord>-83.704765 42.303860 0</gx:coord>
+        <gx:coord>-83.704827 42.303915 0</gx:coord>
+        <gx:coord>-83.704889 42.303970 0</gx:coord>
+        <gx:coord>-83.704951 42.304025 0</gx:coord>
+        <!-- Seg 15: WP14 → WP15 (42.304305,-83.705369), 6 intervals -->
+        <gx:coord>-83.705021 42.304072 0</gx:coord>
+        <gx:coord>-83.705090 42.304118 0</gx:coord>
+        <gx:coord>-83.705160 42.304165 0</gx:coord>
+        <gx:coord>-83.705230 42.304212 0</gx:coord>
+        <gx:coord>-83.705299 42.304258 0</gx:coord>
+        <gx:coord>-83.705369 42.304305 0</gx:coord>
+        <!-- Seg 16: WP15 → WP16 (42.304735,-83.706032), 9 intervals -->
+        <gx:coord>-83.705443 42.304353 0</gx:coord>
+        <gx:coord>-83.705516 42.304401 0</gx:coord>
+        <gx:coord>-83.705590 42.304448 0</gx:coord>
+        <gx:coord>-83.705664 42.304496 0</gx:coord>
+        <gx:coord>-83.705737 42.304544 0</gx:coord>
+        <gx:coord>-83.705811 42.304592 0</gx:coord>
+        <gx:coord>-83.705885 42.304639 0</gx:coord>
+        <gx:coord>-83.705958 42.304687 0</gx:coord>
+        <gx:coord>-83.706032 42.304735 0</gx:coord>
+        <!-- Seg 17: WP16 → WP17 (42.304869,-83.706305), 3 intervals -->
+        <gx:coord>-83.706123 42.304780 0</gx:coord>
+        <gx:coord>-83.706214 42.304824 0</gx:coord>
+        <gx:coord>-83.706305 42.304869 0</gx:coord>
+        <!-- Seg 18: WP17 → end (42.305194,-83.707329), 11 intervals -->
+        <gx:coord>-83.706398 42.304899 0</gx:coord>
+        <gx:coord>-83.706491 42.304928 0</gx:coord>
+        <gx:coord>-83.706584 42.304958 0</gx:coord>
+        <gx:coord>-83.706677 42.304987 0</gx:coord>
+        <gx:coord>-83.706770 42.305017 0</gx:coord>
+        <gx:coord>-83.706864 42.305046 0</gx:coord>
+        <gx:coord>-83.706957 42.305076 0</gx:coord>
+        <gx:coord>-83.707050 42.305105 0</gx:coord>
+        <gx:coord>-83.707143 42.305135 0</gx:coord>
+        <gx:coord>-83.707236 42.305164 0</gx:coord>
+        <gx:coord>-83.707329 42.305194 0</gx:coord>
+      </gx:Track>
+    </Placemark>
+  </Document>
+</kml>
