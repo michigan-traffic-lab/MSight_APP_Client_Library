@@ -61,8 +61,13 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -76,7 +81,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -137,6 +144,11 @@ import kotlin.math.sqrt
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
 
+private fun generateRandomClientId(): String {
+    val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "client-" + (1..8).map { chars.random() }.joinToString("")
+}
+
 enum class SdsmFilter(val label: String) {
     OUSTER("Ouster"),
     DERQ("DeRQ"),
@@ -173,6 +185,7 @@ class MainActivity : ComponentActivity() {
     private var warningDisplayJob: Job? = null
     private var currentWarningEventId: String? = null
     private var warningPlayer: MediaPlayer? = null
+    private var isMuted by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -208,11 +221,17 @@ class MainActivity : ComponentActivity() {
                         showSpatOverlay = showSpatOverlay,
                         spatMapCache = spatMapCache,
                         latestSpatEvents = latestSpatEvents,
+                        isMuted = isMuted,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
                         onSpatToggle = { enabled ->
                             showSpatOverlay = enabled
                             activeClient?.setSpatEnabled(enabled)
+                        },
+                        onToggleMute = {
+                            val newMuted = !isMuted
+                            isMuted = newMuted
+                            if (newMuted) stopWarningSound()
                         },
                         onDismissWarning = {
                             warningVisible = false
@@ -369,7 +388,7 @@ class MainActivity : ComponentActivity() {
                 currentWarningEventId = warning.eventId
                 warningVisible = true
                 Log.d("MSight", "Received warning: $warning")
-                startWarningSound()
+                if (!isMuted) startWarningSound()
             } else {
                 // Same event still active — extend the timeout, no visual restart
                 Log.d("MSight", "Extending warning timeout for event_id=${warning.eventId}")
@@ -428,9 +447,11 @@ fun MSightScreen(
     showSpatOverlay: Boolean,
     spatMapCache: Map<String, MSightIntersectionMap?>,
     latestSpatEvents: Map<String, MSightSpatEvent>,
+    isMuted: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
     onSpatToggle: (Boolean) -> Unit,
+    onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
     val isActive = clientState is ClientState.Running || clientState is ClientState.Starting
@@ -438,7 +459,7 @@ fun MSightScreen(
     // Config state lives here so it survives screen transitions
     var cloudUrl by remember { mutableStateOf("https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com") }
     var appId by remember { mutableStateOf("msight-demo") }
-    var clientId by remember { mutableStateOf("client-001") }
+    var clientId by remember { mutableStateOf(generateRandomClientId()) }
     var roadUserType by remember { mutableStateOf(MSightRoadUserType.VEHICLE) }
     var roadUserSubType by remember { mutableStateOf("passenger_car") }
     var deviceType by remember { mutableStateOf(MSightDeviceType.CELLPHONE) }
@@ -461,8 +482,10 @@ fun MSightScreen(
             showSpatOverlay = showSpatOverlay,
             spatMapCache = spatMapCache,
             latestSpatEvents = latestSpatEvents,
+            isMuted = isMuted,
             onStop = onStop,
             onSpatToggle = onSpatToggle,
+            onToggleMute = onToggleMute,
             onDismissWarning = onDismissWarning
         )
     } else {
@@ -474,6 +497,7 @@ fun MSightScreen(
             onAppIdChange = { appId = it },
             clientId = clientId,
             onClientIdChange = { clientId = it },
+            onClientIdRefresh = { clientId = generateRandomClientId() },
             roadUserType = roadUserType,
             onRoadUserTypeChange = { roadUserType = it },
             roadUserSubType = roadUserSubType,
@@ -509,6 +533,7 @@ private fun ConfigScreen(
     onAppIdChange: (String) -> Unit,
     clientId: String,
     onClientIdChange: (String) -> Unit,
+    onClientIdRefresh: () -> Unit,
     roadUserType: MSightRoadUserType,
     onRoadUserTypeChange: (MSightRoadUserType) -> Unit,
     roadUserSubType: String,
@@ -553,13 +578,26 @@ private fun ConfigScreen(
                 singleLine = true
             )
 
-            OutlinedTextField(
-                value = clientId,
-                onValueChange = onClientIdChange,
-                label = { Text("Client ID") },
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = clientId,
+                    onValueChange = onClientIdChange,
+                    label = { Text("Client ID") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                IconButton(onClick = onClientIdRefresh) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Generate new Client ID",
+                        tint = Color(0xFF1976D2)
+                    )
+                }
+            }
 
             EnumDropdown(
                 label = "Road User Type",
@@ -648,19 +686,40 @@ private fun ActiveMapScreen(
     showSpatOverlay: Boolean,
     spatMapCache: Map<String, MSightIntersectionMap?>,
     latestSpatEvents: Map<String, MSightSpatEvent>,
+    isMuted: Boolean,
     onStop: () -> Unit,
     onSpatToggle: (Boolean) -> Unit,
+    onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
     var infoPanelVisible by remember { mutableStateOf(false) }
     var sdsmFilter by remember { mutableStateOf(SdsmFilter.OUSTER) }
     val markerCache = remember { HashMap<String, BitmapDescriptor>() }
+    val coroutineScope = rememberCoroutineScope()
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 5f)
     }
 
     var hasInitialLocation by remember { mutableStateOf(false) }
+    // Whether the camera is locked to follow the device position
+    var isFollowingLocation by remember { mutableStateOf(true) }
+    // The most recent GPS fix — used to re-center on button tap
+    var lastKnownLatLng by remember { mutableStateOf<LatLng?>(null) }
+    // True while we are programmatically animating the camera
+    var isCameraAnimating by remember { mutableStateOf(false) }
+
+    // Observe camera movement in one persistent coroutine.
+    // When the camera starts moving and WE did NOT start it, the user panned/zoomed —
+    // stop following so the camera stays where the user left it.
+    LaunchedEffect(Unit) {
+        snapshotFlow { cameraPositionState.isMoving }
+            .collect { isMoving ->
+                if (isMoving && !isCameraAnimating) {
+                    isFollowingLocation = false
+                }
+            }
+    }
 
     // Stable map: objectID -> (LatLng, SdsmDetectedObject) — updated in-place to avoid marker flash
     val objectPositions = remember { mutableStateMapOf<Int, Pair<LatLng, SdsmDetectedObject>>() }
@@ -719,11 +778,18 @@ private fun ActiveMapScreen(
     LaunchedEffect(latestLocation) {
         latestLocation?.let { loc ->
             val latLng = LatLng(loc.latitude, loc.longitude)
+            lastKnownLatLng = latLng
             if (!hasInitialLocation) {
+                // First fix: always jump to device location regardless of follow state
                 hasInitialLocation = true
+                isCameraAnimating = true
                 cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(latLng, 20f))
-            } else {
+                isCameraAnimating = false
+            } else if (isFollowingLocation) {
+                // Subsequent fixes: only move if we are in follow mode
+                isCameraAnimating = true
                 cameraPositionState.animate(CameraUpdateFactory.newLatLng(latLng))
+                isCameraAnimating = false
             }
         }
     }
@@ -757,11 +823,12 @@ private fun ActiveMapScreen(
                 key(id) {
                     val markerState = remember { MarkerState(position = entryLatLng) }
                     SideEffect { markerState.position = entryLatLng }
-                    val headingBucket = (entryObj.heading / 10.0).toInt() * 10.0
-                    val cacheKey = "${entryObj.objectType}_$headingBucket"
+                    // val headingBucket = (entryObj.heading / 10.0).toInt() * 10.0
+                    // val cacheKey = "${entryObj.objectType}_$headingBucket"
+                    val cacheKey = entryObj.objectType
                     val markerIcon = markerCache.getOrPut(cacheKey) {
                         BitmapDescriptorFactory.fromBitmap(
-                            createObjectMarkerBitmap(entryObj.objectType, headingBucket)
+                            createObjectMarkerBitmap(entryObj.objectType, 0.0) // heading rendering disabled
                         )
                     }
                     Marker(
@@ -890,6 +957,18 @@ private fun ActiveMapScreen(
                     fontWeight = FontWeight.Bold
                 )
             }
+            // Mute / unmute button
+            FloatingActionButton(
+                onClick = onToggleMute,
+                containerColor = if (isMuted) Color(0xFF616161) else Color(0xFF1976D2),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = if (isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
+                    tint = Color.White
+                )
+            }
         }
 
         // Bottom-center STOP button
@@ -917,6 +996,41 @@ private fun ActiveMapScreen(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 3.sp
+                )
+            }
+        }
+
+        // Re-center button — fades in at bottom-right when the user has panned/zoomed away
+        AnimatedVisibility(
+            visible = !isFollowingLocation && hasInitialLocation,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(bottom = 100.dp, end = 16.dp),
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(220))
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    isFollowingLocation = true
+                    lastKnownLatLng?.let { latLng ->
+                        coroutineScope.launch {
+                            isCameraAnimating = true
+                            cameraPositionState.animate(
+                                CameraUpdateFactory.newLatLng(latLng),
+                                durationMs = 600
+                            )
+                            isCameraAnimating = false
+                        }
+                    }
+                },
+                containerColor = Color.White,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.GpsFixed,
+                    contentDescription = "Re-center to my location",
+                    tint = Color(0xFF1976D2)
                 )
             }
         }
@@ -1479,29 +1593,29 @@ private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitma
     paint.strokeWidth = 3f
     canvas.drawCircle(cx, cy, radius, paint)
 
-    // White direction arrow pointing in heading direction (0° = north)
-    paint.style = Paint.Style.FILL
-    val headingRad = Math.toRadians(heading)
-    val tipDist = radius * 0.72f
-    val tipX = cx + (tipDist * sin(headingRad)).toFloat()
-    val tipY = cy - (tipDist * cos(headingRad)).toFloat()
-    val baseDist = radius * 0.25f
-    val baseX = cx - (baseDist * sin(headingRad)).toFloat()
-    val baseY = cy + (baseDist * cos(headingRad)).toFloat()
-    val halfBase = radius * 0.28f
-    val perpRad = headingRad + Math.PI / 2
-    val path = Path()
-    path.moveTo(tipX, tipY)
-    path.lineTo(
-        baseX + (halfBase * sin(perpRad)).toFloat(),
-        baseY - (halfBase * cos(perpRad)).toFloat()
-    )
-    path.lineTo(
-        baseX - (halfBase * sin(perpRad)).toFloat(),
-        baseY + (halfBase * cos(perpRad)).toFloat()
-    )
-    path.close()
-    canvas.drawPath(path, paint)
+    // White direction arrow pointing in heading direction (0° = north) — commented out, location-only rendering
+    // paint.style = Paint.Style.FILL
+    // val headingRad = Math.toRadians(heading)
+    // val tipDist = radius * 0.72f
+    // val tipX = cx + (tipDist * sin(headingRad)).toFloat()
+    // val tipY = cy - (tipDist * cos(headingRad)).toFloat()
+    // val baseDist = radius * 0.25f
+    // val baseX = cx - (baseDist * sin(headingRad)).toFloat()
+    // val baseY = cy + (baseDist * cos(headingRad)).toFloat()
+    // val halfBase = radius * 0.28f
+    // val perpRad = headingRad + Math.PI / 2
+    // val path = Path()
+    // path.moveTo(tipX, tipY)
+    // path.lineTo(
+    //     baseX + (halfBase * sin(perpRad)).toFloat(),
+    //     baseY - (halfBase * cos(perpRad)).toFloat()
+    // )
+    // path.lineTo(
+    //     baseX - (halfBase * sin(perpRad)).toFloat(),
+    //     baseY + (halfBase * cos(perpRad)).toFloat()
+    // )
+    // path.close()
+    // canvas.drawPath(path, paint)
 
     return bitmap
 }
