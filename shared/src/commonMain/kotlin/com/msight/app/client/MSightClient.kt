@@ -551,8 +551,6 @@ private class MSightSignalProcessor(
     private var loadedMaps: List<MSightIntersectionMap> = emptyList()
     private var activeApproach: ApproachResult? = null
     private var latestSpatEvent: MSightSpatEvent? = null
-    private var pendingApproach: ApproachResult? = null
-    private var pendingFrames = 0
     private var nullResultFrames = 0
     private var lastEmitMillis = 0L
     private var hideJob: Job? = null
@@ -582,29 +580,42 @@ private class MSightSignalProcessor(
         println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(locationEvent.latitude, locationEvent.longitude))
 
         val rawResult = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
-        // Post-filter: suppress detector result if vehicle is already past this arm's stop line.
-        // This prevents jitter arms (wrong match for one frame) from falsely triggering a crossing,
-        // and stops IDLE→IDLE spam after the vehicle has cleared the intersection.
-        val result = if (rawResult != null) {
-            val sd = computeSignedApproachDist(locationEvent, rawResult)
-            if (sd >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
-                println("INFO: SignalProcessor suppressed arm=${rawResult.arm.armId} signedDist=%.1fm (past stop line)".format(sd))
-                null
-            } else rawResult
-        } else null
 
-        // Crossing check uses activeApproach (hysteresis-stable) so a single jitter frame
-        // in the raw detector cannot falsely trigger a crossing for the wrong arm.
-        val knownApproach = activeApproach ?: result
-        if (knownApproach != null) {
-            val signedDist = computeSignedApproachDist(locationEvent, knownApproach)
-            println("INFO: SignalProcessor signedDist=%.1fm threshold=%.1fm arm=%d".format(signedDist, STOP_LINE_CROSSED_THRESHOLD_METERS, knownApproach.arm.armId))
-            if (signedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS) {
-                println("INFO: SignalProcessor crossed stop line, transitioning state=$displayState→${if (displayState == DisplayState.ACTIVE) "HIDING" else "IDLE"}")
-                if (displayState == DisplayState.ACTIVE) startHiding() else clearState()
-                return
-            }
+        // Crossing detection — trip when the user has moved past EITHER the locked arm's
+        // stop line OR the live detected arm's stop line.
+        //
+        // The arm lock applies ONLY to the DISPLAYED signal (activeApproach drives what we
+        // show in the overlay). The detector still runs in real time every frame, and the
+        // crossing check is allowed to follow the live detected arm. This is required for
+        // turn cases: on a sharp left/right turn, the user's component along the locked
+        // arm's bearing (a perpendicular line through refPoint) can peak below the 3 m
+        // threshold and then plateau/decay as they exit on a perpendicular street, so the
+        // locked-arm crossing check would never fire. The live arm's perpendicular (through
+        // the same refPoint, oriented along the cross street) does get crossed cleanly as
+        // they move down the new street, so HIDE timing stays accurate through any turn.
+        val lockedSignedDist = activeApproach?.let { computeSignedApproachDist(locationEvent, it) }
+        val liveSignedDist = rawResult?.let { computeSignedApproachDist(locationEvent, it) }
+        val crossedLocked = lockedSignedDist != null && lockedSignedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS
+        val crossedLive = liveSignedDist != null && liveSignedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS
+        println("INFO: SignalProcessor crossing-check lockedDist=%s liveDist=%s threshold=%.1fm lockedArm=%s liveArm=%s".format(
+            lockedSignedDist?.let { "%.1fm".format(it) } ?: "n/a",
+            liveSignedDist?.let { "%.1fm".format(it) } ?: "n/a",
+            STOP_LINE_CROSSED_THRESHOLD_METERS,
+            activeApproach?.arm?.armId?.toString() ?: "n/a",
+            rawResult?.arm?.armId?.toString() ?: "n/a"
+        ))
+        if (crossedLocked || crossedLive) {
+            val source = if (crossedLocked) "locked arm=${activeApproach?.arm?.armId}"
+                         else "live arm=${rawResult?.arm?.armId}"
+            println("INFO: SignalProcessor crossed stop line ($source), transitioning state=$displayState→${if (displayState == DisplayState.ACTIVE) "HIDING" else "IDLE"}")
+            if (displayState == DisplayState.ACTIVE) startHiding() else clearState()
+            return
         }
+
+        // Below threshold for both lines — rawResult is a valid candidate this frame.
+        // (The post-filter that used to null this out for crossed arms is no longer needed:
+        // any rawResult past its own threshold has already triggered the branch above.)
+        val result = rawResult
 
         when (displayState) {
             DisplayState.IDLE -> {
@@ -631,31 +642,18 @@ private class MSightSignalProcessor(
             DisplayState.ACTIVE -> {
                 if (result != null) {
                     nullResultFrames = 0
-                    val current = activeApproach
-                    if (current == null || result.arm.armId == current.arm.armId) {
-                        // Same arm — accept immediately, discard any pending candidate.
-                        activeApproach = result
-                        pendingApproach = null
-                        pendingFrames = 0
-                    } else {
-                        // Different arm — require APPROACH_SWITCH_MIN_FRAMES consecutive
-                        // frames with the same new arm before accepting the switch.
-                        if (result.arm.armId == pendingApproach?.arm?.armId) {
-                            pendingFrames++
-                        } else {
-                            pendingApproach = result
-                            pendingFrames = 1
-                        }
-                        if (pendingFrames >= APPROACH_SWITCH_MIN_FRAMES) {
-                            activeApproach = pendingApproach
-                            pendingApproach = null
-                            pendingFrames = 0
-                        }
+                    // Arm is locked once ACTIVE — ignore detector arm changes until the
+                    // user crosses the locked arm's stop line. Prevents the displayed
+                    // signal from flipping when the driver turns into a different arm
+                    // of the same intersection.
+                    val locked = activeApproach
+                    if (locked != null && result.arm.armId != locked.arm.armId) {
+                        println("INFO: SignalProcessor arm locked=%d, ignoring detector arm=%d".format(
+                            locked.arm.armId, result.arm.armId))
                     }
-                    val stableApproach = activeApproach
                     val spat = latestSpatEvent
-                    if (stableApproach != null && spat != null) {
-                        emitSignalState(locationEvent.timestampMillis, stableApproach, spat, force = false)
+                    if (locked != null && spat != null) {
+                        emitSignalState(locationEvent.timestampMillis, locked, spat, force = false)
                     }
                 } else {
                     nullResultFrames++
@@ -739,8 +737,6 @@ private class MSightSignalProcessor(
         displayState = DisplayState.IDLE
         activeApproach = null
         latestSpatEvent = null
-        pendingApproach = null
-        pendingFrames = 0
         nullResultFrames = 0
         lastEmitMillis = 0L
     }
@@ -769,9 +765,11 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     val payloadJson = extractJsonObjectField(rawMessage, "message") ?: rawMessage
     val eventId = extractJsonStringField(rawMessage, "event_id")
 
-    // New message format: "type" field (used by SDSM and future message types)
+    // New message format: "type" field — check payload first, fall back to envelope
     val type = extractJsonStringField(payloadJson, "type")
+        ?: extractJsonStringField(rawMessage, "type")
     if (type != null) {
+        logInfo("parseSocketMessage: type=$type payloadLen=${payloadJson.length}")
         return when (type) {
             SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson, eventId)
             SPAT_MESSAGE_TYPE -> parseSpatEvent(payloadJson, eventId)
@@ -975,7 +973,7 @@ private const val MAP_FETCH_RADIUS_METERS = 150
 private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
-private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 10.0
+private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 3.0
 private const val APPROACH_SWITCH_MIN_FRAMES = 3
 private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
 private const val POST_PASS_HIDE_DELAY_MILLIS = 1_000L
@@ -1042,20 +1040,42 @@ private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSight
 private fun parseSpatEvent(messageJson: String, eventId: String? = null): MSightSpatEvent? {
     return try {
         val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
-        val spatObj = msg["spat"]?.jsonObject ?: return null
+        logInfo("parseSpatEvent: top-level keys=${msg.keys}")
 
-        val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val spatObj = msg["spat"]?.jsonObject ?: run {
+            logError("parseSpatEvent: missing 'spat' key")
+            return null
+        }
+        val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: run {
+            logError("parseSpatEvent: missing 'capture_timestamp'")
+            return null
+        }
         val timestampMillis = (captureTimestamp * 1000.0).roundToLong()
 
-        val intersection = parseSpatIntersection(spatObj) ?: return null
+        val intersection = parseSpatIntersection(spatObj) ?: run {
+            logError("parseSpatEvent: parseSpatIntersection returned null, spatObj keys=${spatObj.keys}")
+            return null
+        }
+        val sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: run {
+            logError("parseSpatEvent: missing 'sensor_name'")
+            return null
+        }
+        val deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: run {
+            logError("parseSpatEvent: missing 'device_name'")
+            return null
+        }
+        val creationTimestamp = msg["creation_timestamp"]?.jsonPrimitive?.doubleOrNull ?: run {
+            logError("parseSpatEvent: missing 'creation_timestamp'")
+            return null
+        }
 
         MSightSpatEvent(
             timestampMillis = timestampMillis,
             eventId = eventId,
-            sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: return null,
-            deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            sensorName = sensorName,
+            deviceName = deviceName,
             captureTimestamp = captureTimestamp,
-            creationTimestamp = msg["creation_timestamp"]?.jsonPrimitive?.doubleOrNull ?: return null,
+            creationTimestamp = creationTimestamp,
             frameId = msg["frame_id"]?.jsonPrimitive?.contentOrNull ?: "",
             intersectionName = msg["intersection_name"]?.jsonPrimitive?.contentOrNull,
             msgCnt = spatObj["msgCnt"]?.jsonPrimitive?.intOrNull ?: 0,

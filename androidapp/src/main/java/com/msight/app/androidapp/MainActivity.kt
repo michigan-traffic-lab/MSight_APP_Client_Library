@@ -27,6 +27,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -82,6 +83,11 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path as ComposePath
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -121,7 +127,6 @@ import com.msight.app.client.SignalColor
 import com.msight.app.client.MapRefPoint
 import com.msight.app.client.MapLane
 import com.msight.app.client.MSightIntersectionMap
-import com.msight.app.client.SpatMovementState
 import com.google.maps.android.compose.Polygon
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -725,10 +730,10 @@ private fun ActiveMapScreen(
 
     SideEffect {
         val loadedMaps = spatMapCache.values.count { it != null }
-        Log.d("MSight-SPAT-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatEvents.size} loadedMaps=$loadedMaps")
+        Log.d("MSight-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatEvents.size} loadedMaps=$loadedMaps")
         latestSpatEvents.forEach { (name, _) ->
             val m = spatMapCache[name]
-            Log.d("MSight-SPAT-B-UI", "  $name map=${m?.name ?: "null"} arms=${m?.arms?.size ?: 0}")
+            Log.d("MSight-B-UI", "  $name map=${m?.name ?: "null"} arms=${m?.arms?.size ?: 0}")
         }
     }
 
@@ -769,14 +774,25 @@ private fun ActiveMapScreen(
                 }
             }
 
-            // task_B: always render signal color overlay for each ingress lane of known intersections
+            // task_B: render one merged rectangle per signal group per arm
             latestSpatEvents.forEach forEachIntersection@{ (name, spatEvent) ->
                 val intMap = spatMapCache[name] ?: return@forEachIntersection
                 val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
                 intMap.arms.forEach { arm ->
-                    arm.ingressLanes.forEach forEachLane@{ lane ->
-                        val corners = laneRectangleCorners(intMap.refPoint, lane) ?: return@forEachLane
-                        val color = laneSignalColor(lane, statesByGroup)
+                    // Group ingress lanes by unique signal group; dedup duplicate connections
+                    val lanesBySignalGroup = mutableMapOf<Int, MutableList<MapLane>>()
+                    arm.ingressLanes.forEach { lane ->
+                        lane.connections.map { it.signalGroup }.toSet().forEach { sg ->
+                            lanesBySignalGroup.getOrPut(sg) { mutableListOf() }.add(lane)
+                        }
+                    }
+                    lanesBySignalGroup.forEach forEachGroup@{ (sg, lanes) ->
+                        val color = statesByGroup[sg]
+                            ?.stateTimeSpeed?.firstOrNull()?.eventState
+                            ?.let { SignalColor.fromEventState(it) }
+                            ?: SignalColor.UNKNOWN
+                        val corners = mergedLaneRectangleCorners(intMap.refPoint, lanes)
+                            ?: return@forEachGroup
                         Polygon(
                             points = corners,
                             fillColor = color.toMapOverlayFill(),
@@ -800,23 +816,32 @@ private fun ActiveMapScreen(
             FloatingActionButton(
                 onClick = { onSpatToggle(!showSpatOverlay) },
                 containerColor = if (showSpatOverlay) Color(0xFF2E7D32) else Color(0xFF607D8B),
-                modifier = Modifier.size(48.dp)
+                modifier = Modifier.size(56.dp)
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "Nav",
+                        text = "Traffic",
                         color = Color.White,
                         fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
+                    )
+                    Text(
+                        text = "Light",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
                     )
                     Text(
                         text = if (showSpatOverlay) "ON" else "OFF",
                         color = Color.White,
                         fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 10.sp
                     )
                 }
             }
@@ -1270,6 +1295,8 @@ private fun SignalColor.toComposeColor(): Color = when (this) {
     SignalColor.UNKNOWN -> Color(0xFF607D8B)
 }
 
+private enum class SignalDirection { STRAIGHT, LEFT }
+
 @Composable
 private fun SignalOverlay(
     intersectionName: String,
@@ -1281,13 +1308,13 @@ private fun SignalOverlay(
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xE6000000)),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
+            modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
                 text = intersectionName,
@@ -1299,11 +1326,23 @@ private fun SignalOverlay(
             if (showSingleLight) {
                 val singleColor = if (straightColor != SignalColor.UNKNOWN) straightColor else leftColor
                 val singleIds = if (straightGroupIds.isNotEmpty()) straightGroupIds else leftGroupIds
-                SignalLight(color = singleColor, groupIds = singleIds)
+                SignalArrow(
+                    color = singleColor,
+                    direction = SignalDirection.STRAIGHT,
+                    groupIds = singleIds
+                )
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
-                    SignalLight(color = leftColor, groupIds = leftGroupIds)
-                    SignalLight(color = straightColor, groupIds = straightGroupIds)
+                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    SignalArrow(
+                        color = leftColor,
+                        direction = SignalDirection.LEFT,
+                        groupIds = leftGroupIds
+                    )
+                    SignalArrow(
+                        color = straightColor,
+                        direction = SignalDirection.STRAIGHT,
+                        groupIds = straightGroupIds
+                    )
                 }
             }
         }
@@ -1311,29 +1350,108 @@ private fun SignalOverlay(
 }
 
 @Composable
-private fun SignalLight(color: SignalColor, groupIds: List<Int> = emptyList()) {
+private fun SignalArrow(
+    color: SignalColor,
+    direction: SignalDirection,
+    groupIds: List<Int> = emptyList()
+) {
+    val signalColor = color.toComposeColor()
+    val isOn = color != SignalColor.UNKNOWN
     Box(
-        modifier = Modifier.size(60.dp),
+        modifier = Modifier.size(72.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Circle drawn first (bottom layer)
+        // Dark housing — modern rounded-square traffic indicator
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .clip(CircleShape)
-                .background(color.toComposeColor())
-                .border(2.dp, Color.White.copy(alpha = 0.3f), CircleShape)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF101012))
+                .border(1.5.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
         )
-        // Text drawn second (top layer), guaranteed above the circle
-        if (color == SignalColor.UNKNOWN && groupIds.isNotEmpty()) {
+        // Soft colored glow behind the arrow when the signal is on
+        if (isOn) {
+            Box(
+                modifier = Modifier
+                    .size(58.dp)
+                    .clip(CircleShape)
+                    .background(signalColor.copy(alpha = 0.22f))
+            )
+        }
+        // Arrow glyph
+        Canvas(modifier = Modifier.size(42.dp)) {
+            val arrowColor = if (isOn) signalColor else Color(0xFF4A4F55)
+            when (direction) {
+                SignalDirection.STRAIGHT -> drawStraightArrow(arrowColor)
+                SignalDirection.LEFT -> drawLeftArrow(arrowColor)
+            }
+        }
+        // Show signal group IDs in the corner only when state is unknown
+        if (!isOn && groupIds.isNotEmpty()) {
             Text(
                 text = groupIds.joinToString(","),
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 4.dp)
             )
         }
     }
+}
+
+private fun DrawScope.drawStraightArrow(color: Color) {
+    val w = size.width
+    val h = size.height
+    val strokeW = w * 0.18f
+    val cx = w / 2f
+    // Shaft from bottom up to the arrowhead base
+    drawLine(
+        color = color,
+        start = Offset(cx, h * 0.92f),
+        end = Offset(cx, h * 0.40f),
+        strokeWidth = strokeW,
+        cap = StrokeCap.Round
+    )
+    // Filled triangular arrowhead pointing up
+    val headHalf = w * 0.26f
+    val head = ComposePath().apply {
+        moveTo(cx, h * 0.08f)
+        lineTo(cx - headHalf, h * 0.44f)
+        lineTo(cx + headHalf, h * 0.44f)
+        close()
+    }
+    drawPath(head, color = color)
+}
+
+private fun DrawScope.drawLeftArrow(color: Color) {
+    val w = size.width
+    val h = size.height
+    val strokeW = w * 0.18f
+    val cy = h * 0.55f
+    // L-shaped shaft: up from bottom-right then bend left
+    val shaft = ComposePath().apply {
+        moveTo(w * 0.78f, h * 0.92f)
+        lineTo(w * 0.78f, cy)
+        lineTo(w * 0.36f, cy)
+    }
+    drawPath(
+        path = shaft,
+        color = color,
+        style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+    // Filled triangular arrowhead pointing left
+    val headHalf = h * 0.20f
+    val tipX = w * 0.08f
+    val baseX = w * 0.40f
+    val head = ComposePath().apply {
+        moveTo(tipX, cy)
+        lineTo(baseX, cy - headHalf)
+        lineTo(baseX, cy + headHalf)
+        close()
+    }
+    drawPath(head, color = color)
 }
 
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
@@ -1394,10 +1512,15 @@ private fun offsetToLatLng(ref: MapRefPoint, offsetX: Double, offsetY: Double): 
     return LatLng(lat, lon)
 }
 
-private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Double = 1.5): List<LatLng>? {
-    if (lane.nodes.size < 2) return null
-    val p0 = lane.nodes[0]
-    val p1 = lane.nodes[1]
+private fun mergedLaneRectangleCorners(
+    ref: MapRefPoint,
+    lanes: List<MapLane>,
+    heightM: Double = 1.5
+): List<LatLng>? {
+    // Use the first lane with 2+ nodes to define the approach direction
+    val repLane = lanes.firstOrNull { it.nodes.size >= 2 } ?: return null
+    val p0 = repLane.nodes[0]
+    val p1 = repLane.nodes[1]
     val dx = p1.offsetX - p0.offsetX
     val dy = p1.offsetY - p0.offsetY
     val len = sqrt(dx * dx + dy * dy)
@@ -1406,29 +1529,27 @@ private fun laneRectangleCorners(ref: MapRefPoint, lane: MapLane, heightM: Doubl
     val dirY = dy / len
     val perpX = -dirY
     val perpY = dirX
-    val halfW = lane.nodes[0].widthM / 2.0
-    // Rectangle extends toward refPoint (opposite to lane direction) from the stop-bar node,
-    // so p0 is the far edge and p0 - dir*height is the near edge (closer to intersection centre).
-    return listOf(
-        offsetToLatLng(ref, p0.offsetX + perpX * halfW,                    p0.offsetY + perpY * halfW),
-        offsetToLatLng(ref, p0.offsetX - dirX * heightM + perpX * halfW,   p0.offsetY - dirY * heightM + perpY * halfW),
-        offsetToLatLng(ref, p0.offsetX - dirX * heightM - perpX * halfW,   p0.offsetY - dirY * heightM - perpY * halfW),
-        offsetToLatLng(ref, p0.offsetX - perpX * halfW,                    p0.offsetY - perpY * halfW)
-    )
-}
 
-private fun laneSignalColor(lane: MapLane, statesByGroup: Map<Int, SpatMovementState>): SignalColor {
-    return lane.connections
-        .mapNotNull { conn -> statesByGroup[conn.signalGroup]?.stateTimeSpeed?.firstOrNull()?.eventState }
-        .map { SignalColor.fromEventState(it) }
-        .fold(SignalColor.UNKNOWN) { best, color ->
-            when {
-                best == SignalColor.GREEN || color == SignalColor.GREEN -> SignalColor.GREEN
-                best == SignalColor.YELLOW || color == SignalColor.YELLOW -> SignalColor.YELLOW
-                best == SignalColor.RED || color == SignalColor.RED -> SignalColor.RED
-                else -> SignalColor.UNKNOWN
-            }
-        }
+    // Project each lane's stop-bar node onto the perp axis (relative to p0)
+    // and expand by that lane's half-width to find the total lateral extent
+    var minPerp = Double.MAX_VALUE
+    var maxPerp = -Double.MAX_VALUE
+    for (lane in lanes) {
+        val n0 = lane.nodes.firstOrNull() ?: continue
+        val halfW = n0.widthM / 2.0
+        val perpProj = (n0.offsetX - p0.offsetX) * perpX + (n0.offsetY - p0.offsetY) * perpY
+        if (perpProj - halfW < minPerp) minPerp = perpProj - halfW
+        if (perpProj + halfW > maxPerp) maxPerp = perpProj + halfW
+    }
+    if (minPerp == Double.MAX_VALUE) return null
+
+    // Stop-bar edge at p0; near edge extends toward the intersection centre (-dir)
+    return listOf(
+        offsetToLatLng(ref, p0.offsetX + maxPerp * perpX,                   p0.offsetY + maxPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM + maxPerp * perpX,  p0.offsetY - dirY * heightM + maxPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM + minPerp * perpX,  p0.offsetY - dirY * heightM + minPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX + minPerp * perpX,                   p0.offsetY + minPerp * perpY)
+    )
 }
 
 private fun SignalColor.toMapOverlayFill(): Color = when (this) {

@@ -5,16 +5,16 @@
     <Placemark>
       <name>Northbound approach to Huron-Plymouth intersection</name>
       <gx:Track>
-        <!-- 1 Hz (1-second) steps, 120 points total (T=0..119) -->
-        <!-- Seg 1 (T=0-58):  start (42.297486,-83.704496) → WP1 (42.301930,-83.704355) -->
-        <!-- Seg 2 (T=58-62): WP1 → WP2 (42.302262,-83.704388) -->
-        <!-- Seg 3 (T=62-65): WP2 → stop approach (42.302459,-83.704380) -->
-        <!-- Seg 4 (T=65-84): 20-second stop with GPS noise -->
-        <!-- Seg 5 (T=84-86): resume to intersection (42.302596,-83.704379) -->
-        <!-- Seg 6 (T=86-98): intersection → WP_a (42.303515,-83.704570) -->
-        <!-- Seg 7 (T=98-109): WP_a → WP_b (42.304342,-83.705504) -->
-        <!-- Seg 8 (T=109-115): WP_b → WP_c (42.304824,-83.706214) -->
-        <!-- Seg 9 (T=115-119): WP_c → end (42.305158,-83.707314) -->
+        <!-- 1 Hz (1-second) steps, 79 points total (T=0..78) -->
+        <!-- Seg 1 (T=0-17):  start (42.300650,-83.704296) → WP1 (42.301930,-83.704355) -->
+        <!-- Seg 2 (T=17-21): WP1 → WP2 (42.302262,-83.704388) -->
+        <!-- Seg 3 (T=21-23): WP2 → stop approach (42.302459,-83.704380) -->
+        <!-- Seg 4 (T=23-43): 20-second stop with GPS noise -->
+        <!-- Seg 5 (T=43-45): resume to intersection (42.302596,-83.704379) -->
+        <!-- Seg 6 (T=45-57): intersection → WP_a (42.303515,-83.704570) -->
+        <!-- Seg 7 (T=57-68): WP_a → WP_b (42.304342,-83.705504) -->
+        <!-- Seg 8 (T=68-74): WP_b → WP_c (42.304824,-83.706214) -->
+        <!-- Seg 9 (T=74-78): WP_c → end (42.305158,-83.707314) -->
         <when>2024-01-01T00:00:00Z</when>
         <when>2024-01-01T00:00:01Z</when>
         <when>2024-01-01T00:00:02Z</when>
@@ -94,92 +94,10 @@
         <when>2024-01-01T00:01:16Z</when>
         <when>2024-01-01T00:01:17Z</when>
         <when>2024-01-01T00:01:18Z</when>
-        <when>2024-01-01T00:01:19Z</when>
-        <when>2024-01-01T00:01:20Z</when>
-        <when>2024-01-01T00:01:21Z</when>
-        <when>2024-01-01T00:01:22Z</when>
-        <when>2024-01-01T00:01:23Z</when>
-        <when>2024-01-01T00:01:24Z</when>
-        <when>2024-01-01T00:01:25Z</when>
-        <when>2024-01-01T00:01:26Z</when>
-        <when>2024-01-01T00:01:27Z</when>
-        <when>2024-01-01T00:01:28Z</when>
-        <when>2024-01-01T00:01:29Z</when>
-        <when>2024-01-01T00:01:30Z</when>
-        <when>2024-01-01T00:01:31Z</when>
-        <when>2024-01-01T00:01:32Z</when>
-        <when>2024-01-01T00:01:33Z</when>
-        <when>2024-01-01T00:01:34Z</when>
-        <when>2024-01-01T00:01:35Z</when>
-        <when>2024-01-01T00:01:36Z</when>
-        <when>2024-01-01T00:01:37Z</when>
-        <when>2024-01-01T00:01:38Z</when>
-        <when>2024-01-01T00:01:39Z</when>
-        <when>2024-01-01T00:01:40Z</when>
-        <when>2024-01-01T00:01:41Z</when>
-        <when>2024-01-01T00:01:42Z</when>
-        <when>2024-01-01T00:01:43Z</when>
-        <when>2024-01-01T00:01:44Z</when>
-        <when>2024-01-01T00:01:45Z</when>
-        <when>2024-01-01T00:01:46Z</when>
-        <when>2024-01-01T00:01:47Z</when>
-        <when>2024-01-01T00:01:48Z</when>
-        <when>2024-01-01T00:01:49Z</when>
-        <when>2024-01-01T00:01:50Z</when>
-        <when>2024-01-01T00:01:51Z</when>
-        <when>2024-01-01T00:01:52Z</when>
-        <when>2024-01-01T00:01:53Z</when>
-        <when>2024-01-01T00:01:54Z</when>
-        <when>2024-01-01T00:01:55Z</when>
-        <when>2024-01-01T00:01:56Z</when>
-        <when>2024-01-01T00:01:57Z</when>
-        <when>2024-01-01T00:01:58Z</when>
-        <when>2024-01-01T00:01:59Z</when>
 
         <!-- gx:coord order: longitude latitude altitude -->
-        <!-- Seg 1: start → WP1 (42.301930,-83.704355), 58 intervals @ ~8.5 m/s -->
-        <gx:coord>-83.704496 42.297486 0</gx:coord>
-        <gx:coord>-83.704494 42.297563 0</gx:coord>
-        <gx:coord>-83.704491 42.297639 0</gx:coord>
-        <gx:coord>-83.704489 42.297716 0</gx:coord>
-        <gx:coord>-83.704486 42.297793 0</gx:coord>
-        <gx:coord>-83.704484 42.297869 0</gx:coord>
-        <gx:coord>-83.704481 42.297946 0</gx:coord>
-        <gx:coord>-83.704479 42.298023 0</gx:coord>
-        <gx:coord>-83.704476 42.298099 0</gx:coord>
-        <gx:coord>-83.704474 42.298176 0</gx:coord>
-        <gx:coord>-83.704471 42.298253 0</gx:coord>
-        <gx:coord>-83.704469 42.298329 0</gx:coord>
-        <gx:coord>-83.704466 42.298406 0</gx:coord>
-        <gx:coord>-83.704464 42.298483 0</gx:coord>
-        <gx:coord>-83.704461 42.298560 0</gx:coord>
-        <gx:coord>-83.704459 42.298636 0</gx:coord>
-        <gx:coord>-83.704456 42.298713 0</gx:coord>
-        <gx:coord>-83.704454 42.298790 0</gx:coord>
-        <gx:coord>-83.704451 42.298866 0</gx:coord>
-        <gx:coord>-83.704449 42.298943 0</gx:coord>
-        <gx:coord>-83.704446 42.299020 0</gx:coord>
-        <gx:coord>-83.704444 42.299096 0</gx:coord>
-        <gx:coord>-83.704441 42.299173 0</gx:coord>
-        <gx:coord>-83.704439 42.299250 0</gx:coord>
-        <gx:coord>-83.704436 42.299326 0</gx:coord>
-        <gx:coord>-83.704434 42.299403 0</gx:coord>
-        <gx:coord>-83.704431 42.299480 0</gx:coord>
-        <gx:coord>-83.704429 42.299557 0</gx:coord>
-        <gx:coord>-83.704426 42.299633 0</gx:coord>
-        <gx:coord>-83.704424 42.299710 0</gx:coord>
-        <gx:coord>-83.704421 42.299787 0</gx:coord>
-        <gx:coord>-83.704419 42.299863 0</gx:coord>
-        <gx:coord>-83.704416 42.299940 0</gx:coord>
-        <gx:coord>-83.704414 42.300017 0</gx:coord>
-        <gx:coord>-83.704411 42.300093 0</gx:coord>
-        <gx:coord>-83.704409 42.300170 0</gx:coord>
-        <gx:coord>-83.704406 42.300247 0</gx:coord>
-        <gx:coord>-83.704404 42.300323 0</gx:coord>
-        <gx:coord>-83.704401 42.300400 0</gx:coord>
-        <gx:coord>-83.704399 42.300477 0</gx:coord>
-        <gx:coord>-83.704396 42.300554 0</gx:coord>
-        <gx:coord>-83.704394 42.300630 0</gx:coord>
+        <!-- Seg 1: start (42.300650,-83.704296) → WP1 (42.301930,-83.704355), 17 intervals @ ~8.5 m/s -->
+        <gx:coord>-83.704296 42.300650 0</gx:coord>
         <gx:coord>-83.704391 42.300707 0</gx:coord>
         <gx:coord>-83.704389 42.300784 0</gx:coord>
         <gx:coord>-83.704386 42.300860 0</gx:coord>
@@ -202,7 +120,7 @@
         <gx:coord>-83.704372 42.302096 0</gx:coord>
         <gx:coord>-83.704380 42.302179 0</gx:coord>
         <gx:coord>-83.704388 42.302262 0</gx:coord>
-        <!-- Seg 3: WP2 → stop (42.302459,-83.704380), 3 intervals -->
+        <!-- Seg 3: WP2 → stop (42.302459,-83.704380), 2 intervals -->
         <gx:coord>-83.704385 42.302328 0</gx:coord>
         <gx:coord>-83.704383 42.302393 0</gx:coord>
         <!-- Seg 4: 20-second stop at (42.302459,-83.704380) with GPS noise (~±0.5 m) -->
@@ -221,11 +139,11 @@
         <gx:coord>-83.704387 42.302460 0</gx:coord>
         <gx:coord>-83.704379 42.302454 0</gx:coord>
         <gx:coord>-83.704385 42.302462 0</gx:coord>
-        <gx:coord>-83.704376 42.302457 0</gx:coord>
-        <gx:coord>-83.704383 42.302465 0</gx:coord>
         <gx:coord>-83.704378 42.302455 0</gx:coord>
         <gx:coord>-83.704386 42.302461 0</gx:coord>
         <gx:coord>-83.704375 42.302456 0</gx:coord>
+        <gx:coord>-83.704383 42.302465 0</gx:coord>
+        <gx:coord>-83.704378 42.302455 0</gx:coord>
         <!-- Seg 5: resume → intersection (42.302596,-83.704379), 2 intervals -->
         <gx:coord>-83.704380 42.302528 0</gx:coord>
         <gx:coord>-83.704379 42.302596 0</gx:coord>
