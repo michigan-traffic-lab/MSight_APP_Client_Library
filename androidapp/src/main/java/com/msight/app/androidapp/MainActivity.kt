@@ -27,6 +27,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -86,9 +88,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path as ComposePath
 import androidx.compose.ui.graphics.StrokeCap
@@ -96,6 +100,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -871,6 +877,37 @@ private fun ActiveMapScreen(
             }
         }
 
+        // Top-center: always-visible GPS mode indicator
+        // GREEN = Precise (FINE), RED = Approximate (COARSE) / Denied
+        val gpsModeContext = LocalContext.current
+        val gpsFineGranted = ContextCompat.checkSelfPermission(
+            gpsModeContext, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val gpsCoarseGranted = ContextCompat.checkSelfPermission(
+            gpsModeContext, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val (gpsModeText, gpsModeColor) = when {
+            gpsFineGranted -> "GPS: FINE" to Color(0xFF2E7D32)
+            gpsCoarseGranted -> "GPS: COARSE" to Color(0xFFD32F2F)
+            else -> "GPS: DENIED" to Color(0xFFD32F2F)
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 4.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(gpsModeColor)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = gpsModeText,
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
         // Top-left: SPaT display toggle
         Column(
             modifier = Modifier
@@ -1053,8 +1090,10 @@ private fun ActiveMapScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
+                    .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(top = 12.dp)
+                    .padding(top = 4.dp),
+                contentAlignment = Alignment.TopCenter
             ) {
                 SignalOverlay(
                     intersectionName = activeIntersectionName,
@@ -1118,6 +1157,20 @@ private fun InfoPanel(
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF546E7A)
             )
+            val context = LocalContext.current
+            val fineGranted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val coarseGranted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val (modeLabel, modeColor) = when {
+                fineGranted -> "Precise (FINE)" to Color(0xFF2E7D32)
+                coarseGranted -> "Approximate (COARSE)" to Color(0xFFD32F2F)
+                else -> "Denied" to Color(0xFFD32F2F)
+            }
+            InfoRow("Mode", modeLabel, valueColor = modeColor)
+
             if (latestLocation == null) {
                 Text(
                     text = "Awaiting first fix...",
@@ -1138,7 +1191,7 @@ private fun InfoPanel(
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
+private fun InfoRow(label: String, value: String, valueColor: Color = Color(0xFF212121)) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
@@ -1152,7 +1205,8 @@ private fun InfoRow(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF212121)
+            color = valueColor,
+            fontWeight = if (valueColor != Color(0xFF212121)) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
@@ -1421,38 +1475,43 @@ private fun SignalOverlay(
     leftGroupIds: List<Int>
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xE6000000)),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+        modifier = Modifier.widthIn(max = 255.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF06081A)),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
+        border = BorderStroke(1.2.dp, Color(0xFF1E2D5A).copy(alpha = 0.55f))
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
                 text = intersectionName,
                 color = Color.White,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
+            // Arrow panels
             if (showSingleLight) {
                 val singleColor = if (straightColor != SignalColor.UNKNOWN) straightColor else leftColor
                 val singleIds = if (straightGroupIds.isNotEmpty()) straightGroupIds else leftGroupIds
-                SignalArrow(
+                SignalArrowPanel(
                     color = singleColor,
                     direction = SignalDirection.STRAIGHT,
                     groupIds = singleIds
                 )
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    SignalArrow(
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SignalArrowPanel(
                         color = leftColor,
                         direction = SignalDirection.LEFT,
                         groupIds = leftGroupIds
                     )
-                    SignalArrow(
+                    SignalArrowPanel(
                         color = straightColor,
                         direction = SignalDirection.STRAIGHT,
                         groupIds = straightGroupIds
@@ -1464,108 +1523,166 @@ private fun SignalOverlay(
 }
 
 @Composable
-private fun SignalArrow(
+private fun SignalArrowPanel(
     color: SignalColor,
     direction: SignalDirection,
     groupIds: List<Int> = emptyList()
 ) {
     val signalColor = color.toComposeColor()
     val isOn = color != SignalColor.UNKNOWN
+    val accent = if (isOn) signalColor else Color(0xFF3A4263)
+
     Box(
-        modifier = Modifier.size(72.dp),
+        modifier = Modifier
+            .size(width = 110.dp, height = 85.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = if (isOn) listOf(
+                        signalColor.copy(alpha = 0.16f),
+                        Color(0xFF080A1E),
+                        signalColor.copy(alpha = 0.10f)
+                    ) else listOf(
+                        Color(0xFF131630),
+                        Color(0xFF0A0C20)
+                    )
+                )
+            )
+            .border(
+                width = 1.5.dp,
+                brush = Brush.verticalGradient(
+                    colors = if (isOn) listOf(
+                        signalColor.copy(alpha = 0.70f),
+                        signalColor.copy(alpha = 0.25f),
+                        signalColor.copy(alpha = 0.70f)
+                    ) else listOf(
+                        Color(0xFF20264A).copy(alpha = 0.7f),
+                        Color(0xFF20264A).copy(alpha = 0.4f)
+                    )
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
         contentAlignment = Alignment.Center
     ) {
-        // Dark housing — modern rounded-square traffic indicator
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clip(RoundedCornerShape(18.dp))
-                .background(Color(0xFF101012))
-                .border(1.5.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
-        )
-        // Soft colored glow behind the arrow when the signal is on
-        if (isOn) {
-            Box(
-                modifier = Modifier
-                    .size(58.dp)
-                    .clip(CircleShape)
-                    .background(signalColor.copy(alpha = 0.22f))
-            )
-        }
-        // Arrow glyph
-        Canvas(modifier = Modifier.size(42.dp)) {
-            val arrowColor = if (isOn) signalColor else Color(0xFF4A4F55)
+        Canvas(
+            modifier = Modifier.size(width = 80.dp, height = 70.dp)
+        ) {
             when (direction) {
-                SignalDirection.STRAIGHT -> drawStraightArrow(arrowColor)
-                SignalDirection.LEFT -> drawLeftArrow(arrowColor)
+                SignalDirection.STRAIGHT -> drawNeonStraightArrow(accent, isOn)
+                SignalDirection.LEFT -> drawNeonLeftArrow(accent, isOn)
             }
         }
-        // Show signal group IDs in the corner only when state is unknown
         if (!isOn && groupIds.isNotEmpty()) {
             Text(
                 text = groupIds.joinToString(","),
-                color = Color.White.copy(alpha = 0.6f),
-                fontSize = 9.sp,
+                color = Color.White.copy(alpha = 0.75f),
+                fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 4.dp)
+                    .padding(bottom = 8.dp)
             )
         }
     }
 }
 
-private fun DrawScope.drawStraightArrow(color: Color) {
+private fun DrawScope.drawNeonStraightArrow(color: Color, withGlow: Boolean) {
     val w = size.width
     val h = size.height
-    val strokeW = w * 0.18f
     val cx = w / 2f
-    // Shaft from bottom up to the arrowhead base
-    drawLine(
-        color = color,
-        start = Offset(cx, h * 0.92f),
-        end = Offset(cx, h * 0.40f),
-        strokeWidth = strokeW,
-        cap = StrokeCap.Round
-    )
-    // Filled triangular arrowhead pointing up
-    val headHalf = w * 0.26f
-    val head = ComposePath().apply {
-        moveTo(cx, h * 0.08f)
-        lineTo(cx - headHalf, h * 0.44f)
-        lineTo(cx + headHalf, h * 0.44f)
-        close()
+    val shaftBottom = h * 0.92f
+    val shaftTop = h * 0.36f
+    // Tall, narrow arrowhead — half-angle ~33° (full tip ~66°) for a sharp point.
+    val tipY = h * 0.04f
+    val headBaseY = h * 0.44f
+    val headHalf = w * 0.22f
+    val coreStroke = w * 0.20f
+
+    val shaft = ComposePath().apply {
+        moveTo(cx, shaftBottom)
+        lineTo(cx, shaftTop)
     }
-    drawPath(head, color = color)
+    val head = ComposePath().apply {
+        moveTo(cx - headHalf, headBaseY)
+        lineTo(cx, tipY)
+        lineTo(cx + headHalf, headBaseY)
+    }
+    drawNeonPath(shaft, color, coreStroke, withGlow)
+    drawNeonPath(head, color, coreStroke, withGlow)
 }
 
-private fun DrawScope.drawLeftArrow(color: Color) {
+/**
+ * Dedicated left-turn signal arrow: vertical shaft on the right that bends through a
+ * generous rounded corner into a short horizontal segment ending in a leftward chevron.
+ *
+ * The corner radius is intentionally large (~30% of canvas width) so the turn reads as a
+ * smooth J-curve rather than a sharp L. The whole shape sits in the upper half of the
+ * canvas so the curve and arrowhead get visual prominence and the bottom of the panel
+ * stays clean.
+ */
+private fun DrawScope.drawNeonLeftArrow(color: Color, withGlow: Boolean) {
     val w = size.width
     val h = size.height
-    val strokeW = w * 0.18f
-    val cy = h * 0.55f
-    // L-shaped shaft: up from bottom-right then bend left
+    val coreStroke = w * 0.18f
+    val rightX = w * 0.72f
+    val bottomY = h * 0.88f
+    val turnY = h * 0.22f          // higher in canvas than before
+    val cornerR = w * 0.30f        // larger radius → smoother bend
+    val headBaseX = w * 0.22f
+    val tipX = w * 0.04f
+    val headHalfY = h * 0.18f
+
     val shaft = ComposePath().apply {
-        moveTo(w * 0.78f, h * 0.92f)
-        lineTo(w * 0.78f, cy)
-        lineTo(w * 0.36f, cy)
+        moveTo(rightX, bottomY)
+        lineTo(rightX, turnY + cornerR)
+        // Quadratic with control at the corner approximates a quarter-arc of radius cornerR
+        quadraticBezierTo(rightX, turnY, rightX - cornerR, turnY)
+        lineTo(headBaseX, turnY)
+    }
+    val head = ComposePath().apply {
+        moveTo(headBaseX, turnY - headHalfY)
+        lineTo(tipX, turnY)
+        lineTo(headBaseX, turnY + headHalfY)
+    }
+    drawNeonPath(shaft, color, coreStroke, withGlow)
+    drawNeonPath(head, color, coreStroke, withGlow)
+}
+
+/**
+ * Draws a path with a layered neon-glow effect: wide dim halo, mid glow, bright core,
+ * and a thin white-tinted inner highlight for the polished neon-tube look. When [withGlow]
+ * is false, only the muted core stroke is drawn (used for the UNKNOWN/off state).
+ */
+private fun DrawScope.drawNeonPath(
+    path: ComposePath,
+    color: Color,
+    coreStroke: Float,
+    withGlow: Boolean
+) {
+    if (withGlow) {
+        drawPath(
+            path = path,
+            color = color.copy(alpha = 0.12f),
+            style = Stroke(width = coreStroke * 1.85f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = path,
+            color = color.copy(alpha = 0.28f),
+            style = Stroke(width = coreStroke * 1.35f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
     drawPath(
-        path = shaft,
+        path = path,
         color = color,
-        style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        style = Stroke(width = coreStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
     )
-    // Filled triangular arrowhead pointing left
-    val headHalf = h * 0.20f
-    val tipX = w * 0.08f
-    val baseX = w * 0.40f
-    val head = ComposePath().apply {
-        moveTo(tipX, cy)
-        lineTo(baseX, cy - headHalf)
-        lineTo(baseX, cy + headHalf)
-        close()
+    if (withGlow) {
+        drawPath(
+            path = path,
+            color = Color.White.copy(alpha = 0.45f),
+            style = Stroke(width = coreStroke * 0.25f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
-    drawPath(head, color = color)
 }
 
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
