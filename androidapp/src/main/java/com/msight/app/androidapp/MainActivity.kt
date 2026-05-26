@@ -88,7 +88,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -157,7 +156,7 @@ private fun generateRandomClientId(): String {
 
 enum class SdsmFilter(val label: String) {
     OUSTER("Ouster"),
-    DERQ("DeRQ"),
+    DERQ("Derq"),
     MSIGHT("MSight")
 }
 
@@ -877,37 +876,6 @@ private fun ActiveMapScreen(
             }
         }
 
-        // Top-center: always-visible GPS mode indicator
-        // GREEN = Precise (FINE), RED = Approximate (COARSE) / Denied
-        val gpsModeContext = LocalContext.current
-        val gpsFineGranted = ContextCompat.checkSelfPermission(
-            gpsModeContext, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        val gpsCoarseGranted = ContextCompat.checkSelfPermission(
-            gpsModeContext, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        val (gpsModeText, gpsModeColor) = when {
-            gpsFineGranted -> "GPS: FINE" to Color(0xFF2E7D32)
-            gpsCoarseGranted -> "GPS: COARSE" to Color(0xFFD32F2F)
-            else -> "GPS: DENIED" to Color(0xFFD32F2F)
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(top = 4.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(gpsModeColor)
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-        ) {
-            Text(
-                text = gpsModeText,
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
         // Top-left: SPaT display toggle
         Column(
             modifier = Modifier
@@ -1006,33 +974,18 @@ private fun ActiveMapScreen(
                     tint = Color.White
                 )
             }
-        }
-
-        // Bottom-center STOP button
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(bottom = 32.dp)
-        ) {
-            Button(
+            // STOP button
+            FloatingActionButton(
                 onClick = onStop,
-                modifier = Modifier
-                    .height(52.dp)
-                    .width(160.dp),
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                elevation = ButtonDefaults.buttonElevation(
-                    defaultElevation = 8.dp,
-                    pressedElevation = 2.dp
-                )
+                containerColor = Color(0xFFD32F2F),
+                modifier = Modifier.size(48.dp)
             ) {
                 Text(
                     text = "STOP",
                     color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 3.sp
+                    letterSpacing = 1.sp
                 )
             }
         }
@@ -1157,19 +1110,6 @@ private fun InfoPanel(
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF546E7A)
             )
-            val context = LocalContext.current
-            val fineGranted = ContextCompat.checkSelfPermission(
-                context, Manifest.permission.ACCESS_FINE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            val coarseGranted = ContextCompat.checkSelfPermission(
-                context, Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            val (modeLabel, modeColor) = when {
-                fineGranted -> "Precise (FINE)" to Color(0xFF2E7D32)
-                coarseGranted -> "Approximate (COARSE)" to Color(0xFFD32F2F)
-                else -> "Denied" to Color(0xFFD32F2F)
-            }
-            InfoRow("Mode", modeLabel, valueColor = modeColor)
 
             if (latestLocation == null) {
                 Text(
