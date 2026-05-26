@@ -895,14 +895,14 @@ private fun ActiveMapScreen(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "Traffic",
+                        text = "HUD",
                         color = Color.White,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         lineHeight = 11.sp
                     )
                     Text(
-                        text = "Light",
+                        text = "SPaT",
                         color = Color.White,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
@@ -981,7 +981,7 @@ private fun ActiveMapScreen(
                 modifier = Modifier.size(48.dp)
             ) {
                 Text(
-                    text = "STOP",
+                    text = "EXIT",
                     color = Color.White,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
