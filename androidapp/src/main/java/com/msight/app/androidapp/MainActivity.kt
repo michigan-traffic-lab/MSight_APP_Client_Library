@@ -181,7 +181,7 @@ class MainActivity : ComponentActivity() {
     private var showSingleLight by mutableStateOf(false)
     private var straightGroupIds by mutableStateOf<List<Int>>(emptyList())
     private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
-    private var showSpatOverlay by mutableStateOf(false)
+    private var showSpatOverlay by mutableStateOf(true)
     private val spatMapCache = mutableStateMapOf<String, MSightIntersectionMap?>()
     private val latestSpatEvents = mutableStateMapOf<String, MSightSpatEvent>()
 
