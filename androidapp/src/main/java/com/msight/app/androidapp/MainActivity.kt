@@ -876,49 +876,6 @@ private fun ActiveMapScreen(
             }
         }
 
-        // Top-left: SPaT display toggle
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(top = 12.dp, start = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            horizontalAlignment = Alignment.Start
-        ) {
-            FloatingActionButton(
-                onClick = { onSpatToggle(!showSpatOverlay) },
-                containerColor = if (showSpatOverlay) Color(0xFF2E7D32) else Color(0xFF607D8B),
-                modifier = Modifier.size(56.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "HUD",
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 11.sp
-                    )
-                    Text(
-                        text = "SPaT",
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 11.sp
-                    )
-                    Text(
-                        text = if (showSpatOverlay) "ON" else "OFF",
-                        color = Color.White,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 10.sp
-                    )
-                }
-            }
-        }
-
         // Top-right floating button: Info toggle only
         Column(
             modifier = Modifier
@@ -973,6 +930,39 @@ private fun ActiveMapScreen(
                     contentDescription = if (isMuted) "Unmute" else "Mute",
                     tint = Color.White
                 )
+            }
+            // SPaT display toggle
+            FloatingActionButton(
+                onClick = { onSpatToggle(!showSpatOverlay) },
+                containerColor = if (showSpatOverlay) Color(0xFF2E7D32) else Color(0xFF607D8B),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "HUD",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
+                    )
+                    Text(
+                        text = "SPaT",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
+                    )
+                    Text(
+                        text = if (showSpatOverlay) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 10.sp
+                    )
+                }
             }
             // STOP button
             FloatingActionButton(
@@ -1416,10 +1406,10 @@ private fun SignalOverlay(
 ) {
     Card(
         modifier = Modifier.widthIn(max = 255.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF06081A)),
+        colors = CardDefaults.cardColors(containerColor = Color(0x9906081A)),
         shape = RoundedCornerShape(22.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
-        border = BorderStroke(1.2.dp, Color(0xFF1E2D5A).copy(alpha = 0.55f))
+        border = BorderStroke(1.2.dp, Color(0xFF1E2D5A).copy(alpha = 0.35f))
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1479,12 +1469,12 @@ private fun SignalArrowPanel(
             .background(
                 Brush.verticalGradient(
                     colors = if (isOn) listOf(
-                        signalColor.copy(alpha = 0.16f),
-                        Color(0xFF080A1E),
-                        signalColor.copy(alpha = 0.10f)
+                        signalColor.copy(alpha = 0.12f),
+                        Color(0x80080A1E),
+                        signalColor.copy(alpha = 0.07f)
                     ) else listOf(
-                        Color(0xFF131630),
-                        Color(0xFF0A0C20)
+                        Color(0x99131630),
+                        Color(0x800A0C20)
                     )
                 )
             )
