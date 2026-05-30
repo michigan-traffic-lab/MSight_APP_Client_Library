@@ -43,7 +43,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.PI
 import kotlin.math.asin
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToLong
 import kotlin.math.sin
@@ -551,8 +550,16 @@ private class MSightSignalProcessor(
     private var loadedMaps: List<MSightIntersectionMap> = emptyList()
     private var activeApproach: ApproachResult? = null
     private var latestSpatEvent: MSightSpatEvent? = null
-    private var nullResultFrames = 0
-    private var lastEmitMillis = 0L
+
+    // IDLE: count consecutive frames the detector returned the same arm id; promote to ACTIVE
+    // after N_LOCK_FRAMES in a row. A null or arm-id change resets the streak.
+    private var pendingArmId: Int? = null
+    private var pendingFrames = 0
+
+    // ACTIVE: count consecutive null frames while the user is moving; transition to HIDING
+    // after N_HIDE_FRAMES. Null frames while stationary are ignored so the lock holds at red.
+    private var nullFrames = 0
+
     private var hideJob: Job? = null
     private var enabled = false
 
@@ -577,94 +584,87 @@ private class MSightSignalProcessor(
         if (!enabled) return
         if (displayState == DisplayState.HIDING) return
 
-        println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(locationEvent.latitude, locationEvent.longitude))
+        println("INFO: SignalProcessor state=$displayState lat=%.6f lon=%.6f".format(
+            locationEvent.latitude, locationEvent.longitude))
 
-        val rawResult = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
-
-        // Crossing detection — trip when the user has moved past EITHER the locked arm's
-        // stop line OR the live detected arm's stop line.
-        //
-        // The arm lock applies ONLY to the DISPLAYED signal (activeApproach drives what we
-        // show in the overlay). The detector still runs in real time every frame, and the
-        // crossing check is allowed to follow the live detected arm. This is required for
-        // turn cases: on a sharp left/right turn, the user's component along the locked
-        // arm's bearing (a perpendicular line through refPoint) can peak below the 3 m
-        // threshold and then plateau/decay as they exit on a perpendicular street, so the
-        // locked-arm crossing check would never fire. The live arm's perpendicular (through
-        // the same refPoint, oriented along the cross street) does get crossed cleanly as
-        // they move down the new street, so HIDE timing stays accurate through any turn.
-        val lockedSignedDist = activeApproach?.let { computeSignedApproachDist(locationEvent, it) }
-        val liveSignedDist = rawResult?.let { computeSignedApproachDist(locationEvent, it) }
-        val crossedLocked = lockedSignedDist != null && lockedSignedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS
-        val crossedLive = liveSignedDist != null && liveSignedDist >= STOP_LINE_CROSSED_THRESHOLD_METERS
-        println("INFO: SignalProcessor crossing-check lockedDist=%s liveDist=%s threshold=%.1fm lockedArm=%s liveArm=%s".format(
-            lockedSignedDist?.let { "%.1fm".format(it) } ?: "n/a",
-            liveSignedDist?.let { "%.1fm".format(it) } ?: "n/a",
-            STOP_LINE_CROSSED_THRESHOLD_METERS,
-            activeApproach?.arm?.armId?.toString() ?: "n/a",
-            rawResult?.arm?.armId?.toString() ?: "n/a"
-        ))
-        if (crossedLocked || crossedLive) {
-            val source = if (crossedLocked) "locked arm=${activeApproach?.arm?.armId}"
-                         else "live arm=${rawResult?.arm?.armId}"
-            println("INFO: SignalProcessor crossed stop line ($source), transitioning state=$displayState→${if (displayState == DisplayState.ACTIVE) "HIDING" else "IDLE"}")
-            if (displayState == DisplayState.ACTIVE) startHiding() else clearState()
-            return
-        }
-
-        // Below threshold for both lines — rawResult is a valid candidate this frame.
-        // (The post-filter that used to null this out for crossed arms is no longer needed:
-        // any rawResult past its own threshold has already triggered the branch above.)
-        val result = rawResult
+        val result = MSightApproachDetector.detectActiveApproach(locationEvent, history, loadedMaps)
 
         when (displayState) {
-            DisplayState.IDLE -> {
-                if (result != null) {
-                    activeApproach = result
-                    displayState = DisplayState.ACTIVE
-                    val spat = latestSpatEvent
-                    if (spat != null) {
-                        emitSignalState(locationEvent.timestampMillis, result, spat, force = true)
-                    } else {
-                        val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
-                        onSignalState(MSightSignalStateEvent(
-                            timestampMillis = locationEvent.timestampMillis,
-                            intersectionName = result.intersection.name,
-                            straightColor = SignalColor.UNKNOWN,
-                            leftTurnColor = SignalColor.UNKNOWN,
-                            showSingleLight = totalGroups <= 1,
-                            straightSignalGroupIds = result.arm.straightSignalGroups.sorted(),
-                            leftTurnSignalGroupIds = result.arm.leftTurnSignalGroups.sorted()
-                        ))
-                    }
-                }
-            }
-            DisplayState.ACTIVE -> {
-                if (result != null) {
-                    nullResultFrames = 0
-                    // Arm is locked once ACTIVE — ignore detector arm changes until the
-                    // user crosses the locked arm's stop line. Prevents the displayed
-                    // signal from flipping when the driver turns into a different arm
-                    // of the same intersection.
-                    val locked = activeApproach
-                    if (locked != null && result.arm.armId != locked.arm.armId) {
-                        println("INFO: SignalProcessor arm locked=%d, ignoring detector arm=%d".format(
-                            locked.arm.armId, result.arm.armId))
-                    }
-                    val spat = latestSpatEvent
-                    if (locked != null && spat != null) {
-                        emitSignalState(locationEvent.timestampMillis, locked, spat, force = false)
-                    }
-                } else {
-                    nullResultFrames++
-                    println("INFO: SignalProcessor result=null in ACTIVE nullFrames=$nullResultFrames/${APPROACH_SWITCH_MIN_FRAMES}")
-                    if (nullResultFrames >= APPROACH_SWITCH_MIN_FRAMES) {
-                        nullResultFrames = 0
-                        clearAndReset()
-                    }
-                }
-            }
+            DisplayState.IDLE -> handleIdle(locationEvent, result)
+            DisplayState.ACTIVE -> handleActive(locationEvent, result)
             DisplayState.HIDING -> Unit
+        }
+    }
+
+    private fun handleIdle(loc: MSightLocationEvent, result: ApproachResult?) {
+        if (result == null) {
+            pendingArmId = null
+            pendingFrames = 0
+            return
+        }
+        val armId = result.arm.armId
+        if (pendingArmId == armId) {
+            pendingFrames++
+        } else {
+            pendingArmId = armId
+            pendingFrames = 1
+        }
+        println("INFO: SignalProcessor IDLE pendingArm=$armId frames=$pendingFrames/$N_LOCK_FRAMES")
+        if (pendingFrames < N_LOCK_FRAMES) return
+
+        // Promote to ACTIVE — the arm (and therefore its signal groups) is now locked.
+        activeApproach = result
+        displayState = DisplayState.ACTIVE
+        pendingArmId = null
+        pendingFrames = 0
+        nullFrames = 0
+        println("INFO: SignalProcessor IDLE→ACTIVE intersection=${result.intersection.name} armId=$armId")
+
+        val spat = latestSpatEvent
+        if (spat != null && spat.intersectionName == result.intersection.name) {
+            emitSignalState(loc.timestampMillis, result, spat)
+        } else {
+            // Render the overlay shell with UNKNOWN colors until the first matching SPaT arrives.
+            val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
+            onSignalState(MSightSignalStateEvent(
+                timestampMillis = loc.timestampMillis,
+                intersectionName = result.intersection.name,
+                straightColor = SignalColor.UNKNOWN,
+                leftTurnColor = SignalColor.UNKNOWN,
+                showSingleLight = totalGroups <= 1,
+                straightSignalGroupIds = result.arm.straightSignalGroups.sorted(),
+                leftTurnSignalGroupIds = result.arm.leftTurnSignalGroups.sorted()
+            ))
+        }
+    }
+
+    private fun handleActive(loc: MSightLocationEvent, result: ApproachResult?) {
+        if (result != null) {
+            nullFrames = 0
+            val locked = activeApproach
+            if (locked != null && result.arm.armId != locked.arm.armId) {
+                println("INFO: SignalProcessor arm locked=%d, ignoring detector arm=%d".format(
+                    locked.arm.armId, result.arm.armId))
+            }
+            val spat = latestSpatEvent
+            if (locked != null && spat != null) {
+                emitSignalState(loc.timestampMillis, locked, spat)
+            }
+            return
+        }
+        // result == null: only count toward HIDE while the user is moving. This keeps the
+        // overlay stable at a red light, where heading may briefly drop out due to GPS jitter.
+        val moving = (loc.speedMps ?: 0f) >= MOVING_SPEED_THRESHOLD_MPS
+        if (!moving) {
+            println("INFO: SignalProcessor ACTIVE result=null but stationary (speed=%.2f), holding lock".format(
+                loc.speedMps ?: 0f))
+            return
+        }
+        nullFrames++
+        println("INFO: SignalProcessor ACTIVE result=null moving nullFrames=$nullFrames/$N_HIDE_FRAMES")
+        if (nullFrames >= N_HIDE_FRAMES) {
+            nullFrames = 0
+            startHiding()
         }
     }
 
@@ -677,7 +677,7 @@ private class MSightSignalProcessor(
         latestSpatEvent = spatEvent
 
         if (displayState == DisplayState.ACTIVE) {
-            emitSignalState(spatEvent.timestampMillis, approach, spatEvent, force = true)
+            emitSignalState(spatEvent.timestampMillis, approach, spatEvent)
         }
     }
 
@@ -689,11 +689,8 @@ private class MSightSignalProcessor(
     private fun emitSignalState(
         timestampMillis: Long,
         result: ApproachResult,
-        spat: MSightSpatEvent,
-        force: Boolean
+        spat: MSightSpatEvent
     ) {
-        // if (!force && timestampMillis - lastEmitMillis < SIGNAL_UPDATE_INTERVAL_MILLIS) return
-        lastEmitMillis = timestampMillis
         val colors = MSightApproachDetector.extractArmSignals(result.arm, spat)
         val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
         onSignalState(MSightSignalStateEvent(
@@ -721,39 +718,15 @@ private class MSightSignalProcessor(
         }
     }
 
-    private fun clearAndReset() {
-        onSignalState(MSightSignalStateEvent(
-            timestampMillis = currentTimeMillis(),
-            intersectionName = null,
-            straightColor = SignalColor.UNKNOWN,
-            leftTurnColor = SignalColor.UNKNOWN
-        ))
-        clearState()
-    }
-
     private fun clearState() {
         hideJob?.cancel()
         hideJob = null
         displayState = DisplayState.IDLE
         activeApproach = null
         latestSpatEvent = null
-        nullResultFrames = 0
-        lastEmitMillis = 0L
-    }
-
-    /** Signed distance (meters) of the vehicle past the perpendicular stop line through refPoint.
-     *  Positive = vehicle is on the "past intersection" side; negative = still approaching. */
-    private fun computeSignedApproachDist(
-        location: MSightLocationEvent,
-        approach: ApproachResult
-    ): Double {
-        val ref = approach.intersection.refPoint
-        val bearingRad = approach.arm.approachBearingDeg * PI / 180.0
-        val dirEast = sin(bearingRad)
-        val dirNorth = cos(bearingRad)
-        val deltaNorthM = (location.latitude - ref.lat) * 111320.0
-        val deltaEastM = (location.longitude - ref.lon) * cos(ref.lat * PI / 180.0) * 111320.0
-        return deltaEastM * dirEast + deltaNorthM * dirNorth
+        pendingArmId = null
+        pendingFrames = 0
+        nullFrames = 0
     }
 }
 
@@ -973,10 +946,14 @@ private const val MAP_FETCH_RADIUS_METERS = 150
 private const val MAP_LOADED_ZONE_METERS = 100
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
-private const val STOP_LINE_CROSSED_THRESHOLD_METERS = 2.0
-private const val APPROACH_SWITCH_MIN_FRAMES = 3
-private const val SIGNAL_UPDATE_INTERVAL_MILLIS = 500L
-private const val POST_PASS_HIDE_DELAY_MILLIS = 500L
+private const val POST_PASS_HIDE_DELAY_MILLIS = 50L
+
+// Consecutive same-arm detections required to promote IDLE → ACTIVE.
+private const val N_LOCK_FRAMES = 3
+// Consecutive null detections (while moving) required to promote ACTIVE → HIDING.
+private const val N_HIDE_FRAMES = 3
+// Speed threshold below which a null detection is ignored — keeps the overlay locked at red.
+private const val MOVING_SPEED_THRESHOLD_MPS = 2.0f
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -1381,7 +1358,6 @@ private fun buildMapArms(lanes: List<MapLane>): List<MapArm> {
         }
         MapArm(
             armId = armId,
-            approachBearingDeg = computeApproachBearing(ingressLanes),
             ingressLanes = ingressLanes,
             egressLanes = egressLanes,
             straightSignalGroups = straight,
@@ -1389,16 +1365,6 @@ private fun buildMapArms(lanes: List<MapLane>): List<MapArm> {
             rightTurnSignalGroups = rightTurn
         )
     }
-}
-
-/** Bearing (0–360°, clockwise from north) of a vehicle traveling toward the stop bar. */
-private fun computeApproachBearing(ingressLanes: List<MapLane>): Double {
-    val lane = ingressLanes.firstOrNull { it.nodes.size >= 2 } ?: return 0.0
-    val first = lane.nodes.first()   // stop bar — nearest to intersection
-    val last  = lane.nodes.last()    // far end of the approach
-    val dx = first.offsetX - last.offsetX   // east component
-    val dy = first.offsetY - last.offsetY   // north component
-    return (atan2(dx, dy) * (180.0 / PI) + 360.0) % 360.0
 }
 
 private fun haversineDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
