@@ -42,17 +42,22 @@ data class ArmSignalState(
 object MSightApproachDetector {
 
     private const val APPROACH_DISTANCE_METERS = 150.0
-    private const val HEADING_TOLERANCE_DEG = 35.0
+    private const val HEADING_TOLERANCE_DEG = 25.0
+    private const val SEGMENT_WIDTH_MULTIPLIER = 1.00
     private const val MOVING_SPEED_THRESHOLD_MPS = 2.0f
     private const val MIN_BASELINE_METERS = 10.0
+    private const val METERS_PER_DEGREE_LAT = 111320.0
 
     /**
      * Given the current GPS fix, the recent location history, and all loaded intersection maps,
      * returns the intersection + arm the device is approaching, or null if none match.
      *
-     * Arm matching uses heading alignment: the arm whose approachBearingDeg best matches the
-     * device's heading (within HEADING_TOLERANCE_DEG) wins. When stopped, the last known heading
-     * from history is used so the result stays stable at a red light.
+     * Selection is two-stage:
+     *   1. Pick the single closest map by haversine distance to refPoint; gate at
+     *      APPROACH_DISTANCE_METERS.
+     *   2. Within that map, find the ingress-lane segment nearest to the user (point-to-segment
+     *      distance, clamped to endpoints). Accept iff perp distance ≤ SEGMENT_WIDTH_MULTIPLIER ×
+     *      node[i].widthM AND |heading − segmentBearing| ≤ HEADING_TOLERANCE_DEG.
      */
     fun detectActiveApproach(
         currentLocation: MSightLocationEvent,
@@ -67,39 +72,97 @@ object MSightApproachDetector {
         println("INFO: ApproachDetector heading=%.1f°  loc=(%.6f, %.6f)".format(
             heading, currentLocation.latitude, currentLocation.longitude))
 
-        var bestResult: ApproachResult? = null
-        var bestScore = Double.MAX_VALUE
-
-        for (map in maps) {
-            val dist = haversineDistanceMeters(
-                currentLocation.latitude, currentLocation.longitude,
-                map.centerLat, map.centerLon
+        // Stage 1: closest map by refPoint, distance gate.
+        val map = maps.minByOrNull {
+            haversineDistanceMeters(
+                currentLocation.latitude, currentLocation.longitude, it.refPoint.lat, it.refPoint.lon
             )
-            if (dist > APPROACH_DISTANCE_METERS) {
-                println("INFO: ApproachDetector  skip intersection=${map.name} dist=%.1fm > threshold".format(dist))
-                continue
-            }
+        } ?: return null
+        val refDist = haversineDistanceMeters(
+            currentLocation.latitude, currentLocation.longitude, map.refPoint.lat, map.refPoint.lon
+        )
+        if (refDist > APPROACH_DISTANCE_METERS) {
+            println("INFO: ApproachDetector skip intersection=${map.name} refDist=%.1fm > threshold".format(refDist))
+            return null
+        }
 
-            for (arm in map.arms) {
-                val diff = angleDifferenceDeg(heading, arm.approachBearingDeg)
-                val score = diff + dist * 0.1
-                println("INFO: ApproachDetector  intersection=${map.name} armId=${arm.armId} bearing=%.1f° diff=%.1f° dist=%.1fm score=%.2f %s".format(
-                    arm.approachBearingDeg, diff, dist, score,
-                    if (diff > HEADING_TOLERANCE_DEG) "[REJECTED: diff>$HEADING_TOLERANCE_DEG]" else "[candidate]"))
-                if (diff > HEADING_TOLERANCE_DEG) continue
-                if (score < bestScore) {
-                    bestScore = score
-                    bestResult = ApproachResult(map, arm)
+        // User position in the intersection's local east/north frame (metres from refPoint).
+        val refLatRad = map.refPoint.lat * PI / 180.0
+        val userE = (currentLocation.longitude - map.refPoint.lon) * cos(refLatRad) * METERS_PER_DEGREE_LAT
+        val userN = (currentLocation.latitude - map.refPoint.lat) * METERS_PER_DEGREE_LAT
+
+        // Stage 2: nearest ingress segment across all arms.
+        var bestDist = Double.MAX_VALUE
+        var bestArm: MapArm? = null
+        var bestWidth = 0.0
+        var bestBearing = 0.0
+        var bestLaneId = -1
+        var bestSegIdx = -1
+        for (arm in map.arms) {
+            for (lane in arm.ingressLanes) {
+                if (lane.nodes.size < 2) continue
+                for (i in 0 until lane.nodes.size - 1) {
+                    val a = lane.nodes[i]
+                    val b = lane.nodes[i + 1]
+                    val perpDist = pointToSegmentDistance(userE, userN, a.offsetX, a.offsetY, b.offsetX, b.offsetY)
+                    if (perpDist < bestDist) {
+                        bestDist = perpDist
+                        bestArm = arm
+                        bestWidth = a.widthM
+                        bestBearing = segmentBearingDeg(a, b)
+                        bestLaneId = lane.laneID
+                        bestSegIdx = i
+                    }
                 }
             }
         }
 
-        println("INFO: ApproachDetector result=${bestResult?.let {
-            val left = it.arm.leftTurnSignalGroups.joinToString(",").ifEmpty { "none" }
-            val straight = it.arm.straightSignalGroups.joinToString(",").ifEmpty { "none" }
-            "intersection=${it.intersection.name} armId=${it.arm.armId} bearing=%.1f° left: $left; straight: $straight".format(it.arm.approachBearingDeg)
-        } ?: "null"}")
-        return bestResult
+        val arm = bestArm ?: run {
+            println("INFO: ApproachDetector intersection=${map.name} no ingress segments found")
+            return null
+        }
+
+        val widthThreshold = SEGMENT_WIDTH_MULTIPLIER * bestWidth
+        val angDiff = angleDifferenceDeg(heading, bestBearing)
+        val widthOk = bestDist <= widthThreshold
+        val angleOk = angDiff <= HEADING_TOLERANCE_DEG
+        println("INFO: ApproachDetector intersection=${map.name} armId=${arm.armId} laneId=$bestLaneId segIdx=$bestSegIdx perpDist=%.2fm width=%.2fm threshold=%.2fm bearing=%.1f° diff=%.1f° %s".format(
+            bestDist, bestWidth, widthThreshold, bestBearing, angDiff,
+            if (widthOk && angleOk) "[ACCEPT]"
+            else "[REJECT: ${if (!widthOk) "dist>${SEGMENT_WIDTH_MULTIPLIER}×width" else "diff>$HEADING_TOLERANCE_DEG"}]"
+        ))
+        if (!widthOk || !angleOk) return null
+
+        return ApproachResult(map, arm)
+    }
+
+    /** Perpendicular distance from point P to segment AB, clamped to the segment endpoints. */
+    private fun pointToSegmentDistance(
+        px: Double, py: Double,
+        ax: Double, ay: Double,
+        bx: Double, by: Double
+    ): Double {
+        val dx = bx - ax
+        val dy = by - ay
+        val lenSq = dx * dx + dy * dy
+        val t = if (lenSq == 0.0) 0.0 else (((px - ax) * dx + (py - ay) * dy) / lenSq).coerceIn(0.0, 1.0)
+        val cx = ax + t * dx
+        val cy = ay + t * dy
+        val ex = px - cx
+        val ey = py - cy
+        return sqrt(ex * ex + ey * ey)
+    }
+
+    /**
+     * Direction of travel along the segment (a, b), where a is the node closer to the stop bar
+     * (lower index in the lane's node list) and b is farther upstream. A driver approaching the
+     * intersection travels from b toward a, so the bearing vector is (a − b).
+     * Returned in degrees clockwise from north, in [0, 360).
+     */
+    private fun segmentBearingDeg(a: MapLaneNode, b: MapLaneNode): Double {
+        val dx = a.offsetX - b.offsetX
+        val dy = a.offsetY - b.offsetY
+        return (atan2(dx, dy) * (180.0 / PI) + 360.0) % 360.0
     }
 
     /**

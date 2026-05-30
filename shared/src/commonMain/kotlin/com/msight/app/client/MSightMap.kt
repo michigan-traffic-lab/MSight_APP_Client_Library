@@ -42,8 +42,6 @@ data class MapLane(
 
 data class MapArm(
     val armId: Int,
-    /** Bearing (0–360°, clockwise from north) a driver is heading when approaching this arm. */
-    val approachBearingDeg: Double,
     val ingressLanes: List<MapLane>,
     val egressLanes: List<MapLane>,
     val straightSignalGroups: Set<Int>,
