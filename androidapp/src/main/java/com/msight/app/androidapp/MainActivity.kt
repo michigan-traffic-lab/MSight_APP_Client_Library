@@ -126,6 +126,8 @@ import com.msight.app.client.MSightRoadUserType
 import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
 import com.msight.app.client.MSightSpatEvent
+import com.msight.app.client.MSightCriticalSpatEvent
+import com.msight.app.client.SpatIntersection
 import com.msight.app.client.SdsmDetectedObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -183,7 +185,10 @@ class MainActivity : ComponentActivity() {
     private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
     private var showSpatOverlay by mutableStateOf(true)
     private val spatMapCache = mutableStateMapOf<String, MSightIntersectionMap?>()
-    private val latestSpatEvents = mutableStateMapOf<String, MSightSpatEvent>()
+    // Latest SPaT intersection snapshot per intersection name. Fed by both the regular
+    // (MSightSpatEvent) and critical (MSightCriticalSpatEvent) streams — both carry an
+    // identical SpatIntersection, so either re-renders the lane-overlay signal colors.
+    private val latestSpatIntersections = mutableStateMapOf<String, SpatIntersection>()
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -225,7 +230,7 @@ class MainActivity : ComponentActivity() {
                         leftGroupIds = leftGroupIds,
                         showSpatOverlay = showSpatOverlay,
                         spatMapCache = spatMapCache,
-                        latestSpatEvents = latestSpatEvents,
+                        latestSpatIntersections = latestSpatIntersections,
                         isMuted = isMuted,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
@@ -306,20 +311,21 @@ class MainActivity : ComponentActivity() {
                             }
 
                             is MSightSpatEvent -> {
-                                val intName = event.intersectionName ?: event.intersection.name
-                                if (intName != null) {
-                                    latestSpatEvents[intName] = event
-                                    if (!spatMapCache.containsKey(intName)) {
-                                        spatMapCache[intName] = null
-                                        Log.d("MSight-SPAT-B", "Initiating map load for intName=$intName")
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            val result = client.loadMapsByName(intName).firstOrNull()
-                                            Log.d("MSight-SPAT-B", "Map load result for intName=$intName: ${result?.name ?: "null (no map)"}")
-                                            spatMapCache[intName] = result
-                                        }
-                                    }
-                                }
+                                recordSpatIntersection(
+                                    client,
+                                    event.intersectionName ?: event.intersection.name,
+                                    event.intersection
+                                )
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
+                            }
+
+                            is MSightCriticalSpatEvent -> {
+                                recordSpatIntersection(
+                                    client,
+                                    event.intersectionName ?: event.intersection.name,
+                                    event.intersection
+                                )
+                                Log.d("MSight-CRITICAL-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
 
                             is MSightSignalStateEvent -> {
@@ -349,6 +355,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Records the latest SPaT intersection snapshot (from either the regular or critical
+    // stream) so the lane-overlay colors re-render, and lazily loads the matching map once.
+    private fun recordSpatIntersection(
+        client: MSightClient,
+        intersectionName: String?,
+        intersection: SpatIntersection
+    ) {
+        val intName = intersectionName ?: return
+        latestSpatIntersections[intName] = intersection
+        if (!spatMapCache.containsKey(intName)) {
+            spatMapCache[intName] = null
+            Log.d("MSight-SPAT-B", "Initiating map load for intName=$intName")
+            lifecycleScope.launch(Dispatchers.IO) {
+                val result = client.loadMapsByName(intName).firstOrNull()
+                Log.d("MSight-SPAT-B", "Map load result for intName=$intName: ${result?.name ?: "null (no map)"}")
+                spatMapCache[intName] = result
+            }
+        }
+    }
+
     private fun stopClient() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -371,7 +397,7 @@ class MainActivity : ComponentActivity() {
                 straightGroupIds = emptyList()
                 leftGroupIds = emptyList()
                 spatMapCache.clear()
-                latestSpatEvents.clear()
+                latestSpatIntersections.clear()
             }
         }
     }
@@ -451,7 +477,7 @@ fun MSightScreen(
     leftGroupIds: List<Int>,
     showSpatOverlay: Boolean,
     spatMapCache: Map<String, MSightIntersectionMap?>,
-    latestSpatEvents: Map<String, MSightSpatEvent>,
+    latestSpatIntersections: Map<String, SpatIntersection>,
     isMuted: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
@@ -486,7 +512,7 @@ fun MSightScreen(
             leftGroupIds = leftGroupIds,
             showSpatOverlay = showSpatOverlay,
             spatMapCache = spatMapCache,
-            latestSpatEvents = latestSpatEvents,
+            latestSpatIntersections = latestSpatIntersections,
             isMuted = isMuted,
             onStop = onStop,
             onSpatToggle = onSpatToggle,
@@ -690,7 +716,7 @@ private fun ActiveMapScreen(
     leftGroupIds: List<Int>,
     showSpatOverlay: Boolean,
     spatMapCache: Map<String, MSightIntersectionMap?>,
-    latestSpatEvents: Map<String, MSightSpatEvent>,
+    latestSpatIntersections: Map<String, SpatIntersection>,
     isMuted: Boolean,
     onStop: () -> Unit,
     onSpatToggle: (Boolean) -> Unit,
@@ -801,8 +827,8 @@ private fun ActiveMapScreen(
 
     SideEffect {
         val loadedMaps = spatMapCache.values.count { it != null }
-        Log.d("MSight-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatEvents.size} loadedMaps=$loadedMaps")
-        latestSpatEvents.forEach { (name, _) ->
+        Log.d("MSight-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatIntersections.size} loadedMaps=$loadedMaps")
+        latestSpatIntersections.forEach { (name, _) ->
             val m = spatMapCache[name]
             Log.d("MSight-B-UI", "  $name map=${m?.name ?: "null"} arms=${m?.arms?.size ?: 0}")
         }
@@ -847,9 +873,9 @@ private fun ActiveMapScreen(
             }
 
             // task_B: render one merged rectangle per signal group per arm
-            latestSpatEvents.forEach forEachIntersection@{ (name, spatEvent) ->
+            latestSpatIntersections.forEach forEachIntersection@{ (name, intersection) ->
                 val intMap = spatMapCache[name] ?: return@forEachIntersection
-                val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
+                val statesByGroup = intersection.states.associateBy { it.signalGroup }
                 intMap.arms.forEach { arm ->
                     // Group ingress lanes by unique signal group; dedup duplicate connections
                     val lanesBySignalGroup = mutableMapOf<Int, MutableList<MapLane>>()

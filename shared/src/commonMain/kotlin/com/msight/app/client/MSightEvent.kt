@@ -61,6 +61,21 @@ data class MSightSpatEvent(
     val intersection: SpatIntersection
 ) : MSightEvent(timestampMillis)
 
+data class MSightCriticalSpatEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    val sensorName: String,
+    val deviceName: String,
+    val captureTimestamp: Double,
+    val creationTimestamp: Double,
+    /** Optional human-readable intersection name (from message-level field). */
+    val intersectionName: String?,
+    /** Optional name from inside the spat object. */
+    val name: String?,
+    /** The single intersection carried in this critical SPAT message. */
+    val intersection: SpatIntersection
+) : MSightEvent(timestampMillis)
+
 sealed class MSightConflictWarningEvent(
     override val timestampMillis: Long,
     open val ttcSeconds: Double?,
