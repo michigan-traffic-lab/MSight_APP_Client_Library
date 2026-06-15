@@ -166,11 +166,12 @@ object MSightApproachDetector {
     }
 
     /**
-     * For the given arm and a SPaT event from its intersection, returns the current
-     * signal color for straight-ahead and left-turn movements.
+     * For the given arm and a SPaT intersection snapshot (from either the regular or the
+     * critical SPaT stream), returns the current signal color for straight-ahead and
+     * left-turn movements.
      */
-    fun extractArmSignals(arm: MapArm, spatEvent: MSightSpatEvent): ArmSignalState {
-        val statesByGroup = spatEvent.intersection.states.associateBy { it.signalGroup }
+    fun extractArmSignals(arm: MapArm, intersection: SpatIntersection): ArmSignalState {
+        val statesByGroup = intersection.states.associateBy { it.signalGroup }
 
         val straightColor = arm.straightSignalGroups
             .mapNotNull { sg -> statesByGroup[sg]?.stateTimeSpeed?.firstOrNull()?.eventState }

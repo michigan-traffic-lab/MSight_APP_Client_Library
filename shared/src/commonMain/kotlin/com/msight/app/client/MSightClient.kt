@@ -167,6 +167,7 @@ class MSightClient(
             onConnected = initializedLocationUploader::resendLastKnownLocation,
             onEvent = { event ->
                 if (event is MSightSpatEvent) initializedSignalProcessor.onSpat(event)
+                if (event is MSightCriticalSpatEvent) initializedSignalProcessor.onCriticalSpat(event)
                 _events.tryEmit(event)
             }
         )
@@ -546,10 +547,20 @@ private class MSightSignalProcessor(
 ) {
     private enum class DisplayState { IDLE, ACTIVE, HIDING }
 
+    /** Normalized latest-SPaT snapshot, agnostic to which stream produced it. */
+    private data class LatestSpat(
+        val intersectionName: String,
+        val intersection: SpatIntersection,
+        val timestampMillis: Long
+    )
+
     private var displayState = DisplayState.IDLE
     private var loadedMaps: List<MSightIntersectionMap> = emptyList()
     private var activeApproach: ApproachResult? = null
-    private var latestSpatEvent: MSightSpatEvent? = null
+    // Latest SPaT snapshot for the active intersection, sourced from either the regular
+    // SPaT stream (onSpat) or the critical SPaT stream (onCriticalSpat). Both carry an
+    // identical SpatIntersection, so they converge on one internal representation here.
+    private var latestSpat: LatestSpat? = null
 
     // IDLE: count consecutive frames the detector returned the same arm id; promote to ACTIVE
     // after N_LOCK_FRAMES in a row. A null or arm-id change resets the streak.
@@ -620,9 +631,9 @@ private class MSightSignalProcessor(
         nullFrames = 0
         println("INFO: SignalProcessor IDLE→ACTIVE intersection=${result.intersection.name} armId=$armId")
 
-        val spat = latestSpatEvent
+        val spat = latestSpat
         if (spat != null && spat.intersectionName == result.intersection.name) {
-            emitSignalState(loc.timestampMillis, result, spat)
+            emitSignalState(loc.timestampMillis, result, spat.intersection)
         } else {
             // Render the overlay shell with UNKNOWN colors until the first matching SPaT arrives.
             val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
@@ -646,9 +657,9 @@ private class MSightSignalProcessor(
                 println("INFO: SignalProcessor arm locked=%d, ignoring detector arm=%d".format(
                     locked.arm.armId, result.arm.armId))
             }
-            val spat = latestSpatEvent
+            val spat = latestSpat
             if (locked != null && spat != null) {
-                emitSignalState(loc.timestampMillis, locked, spat)
+                emitSignalState(loc.timestampMillis, locked, spat.intersection)
             }
             return
         }
@@ -669,15 +680,33 @@ private class MSightSignalProcessor(
     }
 
     fun onSpat(spatEvent: MSightSpatEvent) {
+        onSpatUpdate(spatEvent.intersectionName, spatEvent.intersection, spatEvent.timestampMillis)
+    }
+
+    fun onCriticalSpat(criticalSpatEvent: MSightCriticalSpatEvent) {
+        onSpatUpdate(
+            criticalSpatEvent.intersectionName,
+            criticalSpatEvent.intersection,
+            criticalSpatEvent.timestampMillis
+        )
+    }
+
+    // Shared handling for both SPaT streams: both carry the same SpatIntersection, so a new
+    // snapshot from either re-renders the active intersection's signal colors identically.
+    private fun onSpatUpdate(
+        intersectionName: String?,
+        intersection: SpatIntersection,
+        timestampMillis: Long
+    ) {
         if (!enabled) return
-        val name = spatEvent.intersectionName ?: return
+        val name = intersectionName ?: return
         val approach = activeApproach ?: return
         if (name != approach.intersection.name) return
 
-        latestSpatEvent = spatEvent
+        latestSpat = LatestSpat(name, intersection, timestampMillis)
 
         if (displayState == DisplayState.ACTIVE) {
-            emitSignalState(spatEvent.timestampMillis, approach, spatEvent)
+            emitSignalState(timestampMillis, approach, intersection)
         }
     }
 
@@ -689,9 +718,9 @@ private class MSightSignalProcessor(
     private fun emitSignalState(
         timestampMillis: Long,
         result: ApproachResult,
-        spat: MSightSpatEvent
+        intersection: SpatIntersection
     ) {
-        val colors = MSightApproachDetector.extractArmSignals(result.arm, spat)
+        val colors = MSightApproachDetector.extractArmSignals(result.arm, intersection)
         val totalGroups = result.arm.straightSignalGroups.union(result.arm.leftTurnSignalGroups).size
         onSignalState(MSightSignalStateEvent(
             timestampMillis = timestampMillis,
@@ -723,7 +752,7 @@ private class MSightSignalProcessor(
         hideJob = null
         displayState = DisplayState.IDLE
         activeApproach = null
-        latestSpatEvent = null
+        latestSpat = null
         pendingArmId = null
         pendingFrames = 0
         nullFrames = 0
@@ -746,6 +775,7 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
         return when (type) {
             SDSM_MESSAGE_TYPE -> parseSdsmEvent(payloadJson, eventId)
             SPAT_MESSAGE_TYPE -> parseSpatEvent(payloadJson, eventId)
+            CRITICAL_SPAT_MESSAGE_TYPE -> parseCriticalSpatEvent(payloadJson, eventId)
             else -> null
         }
     }
@@ -940,6 +970,7 @@ private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
 private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
 private const val SPAT_MESSAGE_TYPE = "spat"
+private const val CRITICAL_SPAT_MESSAGE_TYPE = "critical_spat"
 private const val MAP_SEARCH_PATH = "/v1/maps/search"
 private const val MAP_BY_NAME_PATH = "/v1/maps/"
 private const val MAP_FETCH_RADIUS_METERS = 150
@@ -1061,6 +1092,54 @@ private fun parseSpatEvent(messageJson: String, eventId: String? = null): MSight
         )
     } catch (e: Exception) {
         logError("parseSpatEvent failed: ${describeThrowable(e)}")
+        null
+    }
+}
+
+private fun parseCriticalSpatEvent(messageJson: String, eventId: String? = null): MSightCriticalSpatEvent? {
+    return try {
+        val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
+
+        val spatObj = msg["spat"]?.jsonObject ?: run {
+            logError("parseCriticalSpatEvent: missing 'spat' key")
+            return null
+        }
+        val captureTimestamp = msg["capture_timestamp"]?.jsonPrimitive?.doubleOrNull ?: run {
+            logError("parseCriticalSpatEvent: missing 'capture_timestamp'")
+            return null
+        }
+        val timestampMillis = (captureTimestamp * 1000.0).roundToLong()
+
+        val intersection = parseSpatIntersection(spatObj) ?: run {
+            logError("parseCriticalSpatEvent: parseSpatIntersection returned null, spatObj keys=${spatObj.keys}")
+            return null
+        }
+        val sensorName = msg["sensor_name"]?.jsonPrimitive?.contentOrNull ?: run {
+            logError("parseCriticalSpatEvent: missing 'sensor_name'")
+            return null
+        }
+        val deviceName = msg["device_name"]?.jsonPrimitive?.contentOrNull ?: run {
+            logError("parseCriticalSpatEvent: missing 'device_name'")
+            return null
+        }
+        val creationTimestamp = msg["creation_timestamp"]?.jsonPrimitive?.doubleOrNull ?: run {
+            logError("parseCriticalSpatEvent: missing 'creation_timestamp'")
+            return null
+        }
+
+        MSightCriticalSpatEvent(
+            timestampMillis = timestampMillis,
+            eventId = eventId,
+            sensorName = sensorName,
+            deviceName = deviceName,
+            captureTimestamp = captureTimestamp,
+            creationTimestamp = creationTimestamp,
+            intersectionName = msg["intersection_name"]?.jsonPrimitive?.contentOrNull,
+            name = spatObj["name"]?.jsonPrimitive?.contentOrNull,
+            intersection = intersection
+        )
+    } catch (e: Exception) {
+        logError("parseCriticalSpatEvent failed: ${describeThrowable(e)}")
         null
     }
 }
