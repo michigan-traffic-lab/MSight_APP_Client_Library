@@ -562,6 +562,12 @@ private class MSightSignalProcessor(
     // identical SpatIntersection, so they converge on one internal representation here.
     private var latestSpat: LatestSpat? = null
 
+    // Number of upcoming regular-SPaT updates to ignore. A critical SPaT delivers the new
+    // phase faster than the regular stream, so the regular stream may still emit a couple of
+    // stale frames carrying the OLD color right after a phase change. Suppressing those
+    // prevents a visible color flicker (new → old → new). Reset on each critical SPaT.
+    private var suppressRegularSpatUpdates = 0
+
     // IDLE: count consecutive frames the detector returned the same arm id; promote to ACTIVE
     // after N_LOCK_FRAMES in a row. A null or arm-id change resets the streak.
     private var pendingArmId: Int? = null
@@ -680,14 +686,20 @@ private class MSightSignalProcessor(
     }
 
     fun onSpat(spatEvent: MSightSpatEvent) {
-        onSpatUpdate(spatEvent.intersectionName, spatEvent.intersection, spatEvent.timestampMillis)
+        onSpatUpdate(
+            spatEvent.intersectionName,
+            spatEvent.intersection,
+            spatEvent.timestampMillis,
+            isCritical = false
+        )
     }
 
     fun onCriticalSpat(criticalSpatEvent: MSightCriticalSpatEvent) {
         onSpatUpdate(
             criticalSpatEvent.intersectionName,
             criticalSpatEvent.intersection,
-            criticalSpatEvent.timestampMillis
+            criticalSpatEvent.timestampMillis,
+            isCritical = true
         )
     }
 
@@ -696,12 +708,22 @@ private class MSightSignalProcessor(
     private fun onSpatUpdate(
         intersectionName: String?,
         intersection: SpatIntersection,
-        timestampMillis: Long
+        timestampMillis: Long,
+        isCritical: Boolean
     ) {
         if (!enabled) return
         val name = intersectionName ?: return
         val approach = activeApproach ?: return
         if (name != approach.intersection.name) return
+
+        if (isCritical) {
+            // Authoritative phase-change snapshot — accept it and gate out the trailing
+            // stale regular frames that would otherwise flicker the color back.
+            suppressRegularSpatUpdates = REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL
+        } else if (suppressRegularSpatUpdates > 0) {
+            suppressRegularSpatUpdates--
+            return
+        }
 
         latestSpat = LatestSpat(name, intersection, timestampMillis)
 
@@ -753,6 +775,7 @@ private class MSightSignalProcessor(
         displayState = DisplayState.IDLE
         activeApproach = null
         latestSpat = null
+        suppressRegularSpatUpdates = 0
         pendingArmId = null
         pendingFrames = 0
         nullFrames = 0
@@ -985,6 +1008,9 @@ private const val N_LOCK_FRAMES = 3
 private const val N_HIDE_FRAMES = 3
 // Speed threshold below which a null detection is ignored — keeps the overlay locked at red.
 private const val MOVING_SPEED_THRESHOLD_MPS = 2.0f
+// Regular-SPaT updates to ignore after a critical SPaT delivers a new phase, to avoid the
+// flicker caused by trailing stale frames on the slower regular stream.
+private const val REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL = 2
 
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
