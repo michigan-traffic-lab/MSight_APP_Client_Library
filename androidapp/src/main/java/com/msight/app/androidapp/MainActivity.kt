@@ -150,6 +150,9 @@ import kotlin.math.sqrt
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
+// Regular-SPaT updates to ignore after a critical SPaT delivers a new phase, to avoid the
+// flicker caused by trailing stale frames on the slower regular stream.
+private const val REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL = 2
 
 private fun generateRandomClientId(): String {
     val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -189,6 +192,10 @@ class MainActivity : ComponentActivity() {
     // (MSightSpatEvent) and critical (MSightCriticalSpatEvent) streams — both carry an
     // identical SpatIntersection, so either re-renders the lane-overlay signal colors.
     private val latestSpatIntersections = mutableStateMapOf<String, SpatIntersection>()
+    // Per-intersection count of upcoming regular-SPaT updates to ignore after a critical
+    // SPaT. Critical SPaT delivers a phase change ahead of the regular stream, whose trailing
+    // stale frames would otherwise flicker the color back (new → old → new).
+    private val regularSpatSuppression = mutableMapOf<String, Int>()
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -314,7 +321,8 @@ class MainActivity : ComponentActivity() {
                                 recordSpatIntersection(
                                     client,
                                     event.intersectionName ?: event.intersection.name,
-                                    event.intersection
+                                    event.intersection,
+                                    isCritical = false
                                 )
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
@@ -323,7 +331,8 @@ class MainActivity : ComponentActivity() {
                                 recordSpatIntersection(
                                     client,
                                     event.intersectionName ?: event.intersection.name,
-                                    event.intersection
+                                    event.intersection,
+                                    isCritical = true
                                 )
                                 Log.d("MSight-CRITICAL-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
                             }
@@ -357,12 +366,26 @@ class MainActivity : ComponentActivity() {
 
     // Records the latest SPaT intersection snapshot (from either the regular or critical
     // stream) so the lane-overlay colors re-render, and lazily loads the matching map once.
+    // After a critical SPaT, the next few stale regular updates are suppressed to avoid a
+    // color flicker — see [regularSpatSuppression].
     private fun recordSpatIntersection(
         client: MSightClient,
         intersectionName: String?,
-        intersection: SpatIntersection
+        intersection: SpatIntersection,
+        isCritical: Boolean
     ) {
         val intName = intersectionName ?: return
+
+        if (isCritical) {
+            regularSpatSuppression[intName] = REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL
+        } else {
+            val remaining = regularSpatSuppression[intName] ?: 0
+            if (remaining > 0) {
+                regularSpatSuppression[intName] = remaining - 1
+                return
+            }
+        }
+
         latestSpatIntersections[intName] = intersection
         if (!spatMapCache.containsKey(intName)) {
             spatMapCache[intName] = null
@@ -398,6 +421,7 @@ class MainActivity : ComponentActivity() {
                 leftGroupIds = emptyList()
                 spatMapCache.clear()
                 latestSpatIntersections.clear()
+                regularSpatSuppression.clear()
             }
         }
     }
