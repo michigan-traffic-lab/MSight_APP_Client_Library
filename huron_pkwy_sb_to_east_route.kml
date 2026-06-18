@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Huron Pkwy Southbound Left-Turn East</name>
+    <Placemark>
+      <name>Southbound on Huron Pkwy, left turn east at Huron-Plymouth intersection</name>
+      <gx:Track>
+        <!-- 1 Hz (1-second) steps, 36 points total (T=0..35) -->
+        <!-- Seg 1  (T=0-2):   start (42.303231,-83.704479) → WP1 (42.303093,-83.704414), 2 intervals @ ~8.2 m/s -->
+        <!-- Seg 2  (T=2-4):   WP1  → WP2 (42.302960,-83.704399), 2 intervals -->
+        <!-- Seg 3  (T=4-6):   WP2  → WP3 (42.302873,-83.704394), 2 intervals (decelerating) -->
+        <!-- Seg 4  (T=6-8):   WP3  → WP4 (42.302796,-83.704393), 2 intervals (decelerating) -->
+        <!-- Seg 5  (T=8-10):  WP4  → stop (42.302743,-83.704389), 2 intervals (approaching stop) -->
+        <!-- Stop   (T=10-19): 10-second stop with GPS noise -->
+        <!-- Seg 6  (T=20-22): resume → WP5 (42.302663,-83.704371), 2 intervals (left turn) -->
+        <!-- Seg 7  (T=22-24): WP5  → WP6 (42.302609,-83.704305), 2 intervals (left turn) -->
+        <!-- Seg 8  (T=24-26): WP6  → WP7 (42.302580,-83.704228), 2 intervals (completing left turn) -->
+        <!-- Seg 9  (T=26-28): WP7  → WP8 (42.302570,-83.704148), 2 intervals -->
+        <!-- Seg 10 (T=28-30): WP8  → WP9 (42.302575,-83.704012), 2 intervals (accelerating east) -->
+        <!-- Seg 11 (T=30-35): WP9  → end (42.302589,-83.703491), 5 intervals @ ~8.6 m/s -->
+        <when>2024-01-01T00:00:00Z</when>
+        <when>2024-01-01T00:00:01Z</when>
+        <when>2024-01-01T00:00:02Z</when>
+        <when>2024-01-01T00:00:03Z</when>
+        <when>2024-01-01T00:00:04Z</when>
+        <when>2024-01-01T00:00:05Z</when>
+        <when>2024-01-01T00:00:06Z</when>
+        <when>2024-01-01T00:00:07Z</when>
+        <when>2024-01-01T00:00:08Z</when>
+        <when>2024-01-01T00:00:09Z</when>
+        <when>2024-01-01T00:00:10Z</when>
+        <when>2024-01-01T00:00:11Z</when>
+        <when>2024-01-01T00:00:12Z</when>
+        <when>2024-01-01T00:00:13Z</when>
+        <when>2024-01-01T00:00:14Z</when>
+        <when>2024-01-01T00:00:15Z</when>
+        <when>2024-01-01T00:00:16Z</when>
+        <when>2024-01-01T00:00:17Z</when>
+        <when>2024-01-01T00:00:18Z</when>
+        <when>2024-01-01T00:00:19Z</when>
+        <when>2024-01-01T00:00:20Z</when>
+        <when>2024-01-01T00:00:21Z</when>
+        <when>2024-01-01T00:00:22Z</when>
+        <when>2024-01-01T00:00:23Z</when>
+        <when>2024-01-01T00:00:24Z</when>
+        <when>2024-01-01T00:00:25Z</when>
+        <when>2024-01-01T00:00:26Z</when>
+        <when>2024-01-01T00:00:27Z</when>
+        <when>2024-01-01T00:00:28Z</when>
+        <when>2024-01-01T00:00:29Z</when>
+        <when>2024-01-01T00:00:30Z</when>
+        <when>2024-01-01T00:00:31Z</when>
+        <when>2024-01-01T00:00:32Z</when>
+        <when>2024-01-01T00:00:33Z</when>
+        <when>2024-01-01T00:00:34Z</when>
+        <when>2024-01-01T00:00:35Z</when>
+
+        <!-- gx:coord order: longitude latitude altitude -->
+        <!-- Seg 1: start (42.303231,-83.704479) → WP1 (42.303093,-83.704414), 2 intervals -->
+        <gx:coord>-83.704479 42.303231 0</gx:coord>
+        <gx:coord>-83.704447 42.303162 0</gx:coord>
+        <gx:coord>-83.704414 42.303093 0</gx:coord>
+        <!-- Seg 2: WP1 → WP2 (42.302960,-83.704399), 2 intervals -->
+        <gx:coord>-83.704407 42.303027 0</gx:coord>
+        <gx:coord>-83.704399 42.302960 0</gx:coord>
+        <!-- Seg 3: WP2 → WP3 (42.302873,-83.704394), 2 intervals (decelerating) -->
+        <gx:coord>-83.704397 42.302916 0</gx:coord>
+        <gx:coord>-83.704394 42.302873 0</gx:coord>
+        <!-- Seg 4: WP3 → WP4 (42.302796,-83.704393), 2 intervals (decelerating) -->
+        <gx:coord>-83.704394 42.302835 0</gx:coord>
+        <gx:coord>-83.704393 42.302796 0</gx:coord>
+        <!-- Seg 5: WP4 → stop (42.302743,-83.704389), 2 intervals (approaching stop) -->
+        <gx:coord>-83.704391 42.302769 0</gx:coord>
+        <gx:coord>-83.704389 42.302743 0</gx:coord>
+        <!-- Stop: 10-second stop at (42.302743,-83.704389) with GPS noise (~±0.5 m) -->
+        <gx:coord>-83.704395 42.302748 0</gx:coord>
+        <gx:coord>-83.704383 42.302739 0</gx:coord>
+        <gx:coord>-83.704392 42.302745 0</gx:coord>
+        <gx:coord>-83.704386 42.302741 0</gx:coord>
+        <gx:coord>-83.704394 42.302747 0</gx:coord>
+        <gx:coord>-83.704384 42.302740 0</gx:coord>
+        <gx:coord>-83.704391 42.302746 0</gx:coord>
+        <gx:coord>-83.704387 42.302742 0</gx:coord>
+        <gx:coord>-83.704393 42.302745 0</gx:coord>
+        <!-- Seg 6: resume → WP5 (42.302663,-83.704371), 2 intervals (left turn begins) -->
+        <gx:coord>-83.704389 42.302743 0</gx:coord>
+        <gx:coord>-83.704380 42.302703 0</gx:coord>
+        <gx:coord>-83.704371 42.302663 0</gx:coord>
+        <!-- Seg 7: WP5 → WP6 (42.302609,-83.704305), 2 intervals (left turn) -->
+        <gx:coord>-83.704338 42.302636 0</gx:coord>
+        <gx:coord>-83.704305 42.302609 0</gx:coord>
+        <!-- Seg 8: WP6 → WP7 (42.302580,-83.704228), 2 intervals (completing left turn) -->
+        <gx:coord>-83.704267 42.302594 0</gx:coord>
+        <gx:coord>-83.704228 42.302580 0</gx:coord>
+        <!-- Seg 9: WP7 → WP8 (42.302570,-83.704148), 2 intervals -->
+        <gx:coord>-83.704188 42.302575 0</gx:coord>
+        <gx:coord>-83.704148 42.302570 0</gx:coord>
+        <!-- Seg 10: WP8 → WP9 (42.302575,-83.704012), 2 intervals (accelerating east) -->
+        <gx:coord>-83.704080 42.302572 0</gx:coord>
+        <gx:coord>-83.704012 42.302575 0</gx:coord>
+        <!-- Seg 11: WP9 → end (42.302589,-83.703491), 5 intervals @ ~8.6 m/s -->
+        <gx:coord>-83.703908 42.302578 0</gx:coord>
+        <gx:coord>-83.703804 42.302581 0</gx:coord>
+        <gx:coord>-83.703699 42.302583 0</gx:coord>
+        <gx:coord>-83.703595 42.302586 0</gx:coord>
+        <gx:coord>-83.703491 42.302589 0</gx:coord>
+      </gx:Track>
+    </Placemark>
+  </Document>
+</kml>
