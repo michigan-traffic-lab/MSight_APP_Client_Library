@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Huron Pkwy Westbound</name>
+    <Placemark>
+      <name>Westbound approach to Huron-Plymouth intersection</name>
+      <gx:Track>
+        <!-- 1 Hz (1-second) steps, 45 points total (T=0..44) -->
+        <!-- Seg 1 (T=0-12):  start (42.302741,-83.701631) → WP1 (42.302672,-83.702840), 12 intervals @ ~8.3 m/s -->
+        <!-- Seg 2 (T=12-21): WP1 → WP2 (42.302644,-83.703716), 9 intervals -->
+        <!-- Seg 3 (T=21-25): WP2 → stop (42.302626,-83.704109), 4 intervals -->
+        <!-- Seg 4 (T=25-29): 5-second stop with GPS noise -->
+        <!-- Seg 5 (T=29-38): resume → WP3 (42.302612,-83.704942), 9 intervals -->
+        <!-- Seg 6 (T=38-44): WP3 → end (42.302596,-83.705596), 6 intervals -->
+        <when>2024-01-01T00:00:00Z</when>
+        <when>2024-01-01T00:00:01Z</when>
+        <when>2024-01-01T00:00:02Z</when>
+        <when>2024-01-01T00:00:03Z</when>
+        <when>2024-01-01T00:00:04Z</when>
+        <when>2024-01-01T00:00:05Z</when>
+        <when>2024-01-01T00:00:06Z</when>
+        <when>2024-01-01T00:00:07Z</when>
+        <when>2024-01-01T00:00:08Z</when>
+        <when>2024-01-01T00:00:09Z</when>
+        <when>2024-01-01T00:00:10Z</when>
+        <when>2024-01-01T00:00:11Z</when>
+        <when>2024-01-01T00:00:12Z</when>
+        <when>2024-01-01T00:00:13Z</when>
+        <when>2024-01-01T00:00:14Z</when>
+        <when>2024-01-01T00:00:15Z</when>
+        <when>2024-01-01T00:00:16Z</when>
+        <when>2024-01-01T00:00:17Z</when>
+        <when>2024-01-01T00:00:18Z</when>
+        <when>2024-01-01T00:00:19Z</when>
+        <when>2024-01-01T00:00:20Z</when>
+        <when>2024-01-01T00:00:21Z</when>
+        <when>2024-01-01T00:00:22Z</when>
+        <when>2024-01-01T00:00:23Z</when>
+        <when>2024-01-01T00:00:24Z</when>
+        <when>2024-01-01T00:00:25Z</when>
+        <when>2024-01-01T00:00:26Z</when>
+        <when>2024-01-01T00:00:27Z</when>
+        <when>2024-01-01T00:00:28Z</when>
+        <when>2024-01-01T00:00:29Z</when>
+        <when>2024-01-01T00:00:30Z</when>
+        <when>2024-01-01T00:00:31Z</when>
+        <when>2024-01-01T00:00:32Z</when>
+        <when>2024-01-01T00:00:33Z</when>
+        <when>2024-01-01T00:00:34Z</when>
+        <when>2024-01-01T00:00:35Z</when>
+        <when>2024-01-01T00:00:36Z</when>
+        <when>2024-01-01T00:00:37Z</when>
+        <when>2024-01-01T00:00:38Z</when>
+        <when>2024-01-01T00:00:39Z</when>
+        <when>2024-01-01T00:00:40Z</when>
+        <when>2024-01-01T00:00:41Z</when>
+        <when>2024-01-01T00:00:42Z</when>
+        <when>2024-01-01T00:00:43Z</when>
+        <when>2024-01-01T00:00:44Z</when>
+
+        <!-- gx:coord order: longitude latitude altitude -->
+        <!-- Seg 1: start (42.302741,-83.701631) → WP1 (42.302672,-83.702840), 12 intervals -->
+        <gx:coord>-83.701631 42.302741 0</gx:coord>
+        <gx:coord>-83.701732 42.302735 0</gx:coord>
+        <gx:coord>-83.701832 42.302730 0</gx:coord>
+        <gx:coord>-83.701933 42.302724 0</gx:coord>
+        <gx:coord>-83.702034 42.302718 0</gx:coord>
+        <gx:coord>-83.702135 42.302712 0</gx:coord>
+        <gx:coord>-83.702236 42.302707 0</gx:coord>
+        <gx:coord>-83.702337 42.302701 0</gx:coord>
+        <gx:coord>-83.702437 42.302695 0</gx:coord>
+        <gx:coord>-83.702538 42.302689 0</gx:coord>
+        <gx:coord>-83.702639 42.302683 0</gx:coord>
+        <gx:coord>-83.702739 42.302678 0</gx:coord>
+        <gx:coord>-83.702840 42.302672 0</gx:coord>
+        <!-- Seg 2: WP1 → WP2 (42.302644,-83.703716), 9 intervals -->
+        <gx:coord>-83.702937 42.302669 0</gx:coord>
+        <gx:coord>-83.703035 42.302666 0</gx:coord>
+        <gx:coord>-83.703132 42.302663 0</gx:coord>
+        <gx:coord>-83.703229 42.302660 0</gx:coord>
+        <gx:coord>-83.703327 42.302656 0</gx:coord>
+        <gx:coord>-83.703424 42.302653 0</gx:coord>
+        <gx:coord>-83.703521 42.302650 0</gx:coord>
+        <gx:coord>-83.703619 42.302647 0</gx:coord>
+        <gx:coord>-83.703716 42.302644 0</gx:coord>
+        <!-- Seg 3: WP2 → stop (42.302626,-83.704109), 4 intervals -->
+        <gx:coord>-83.703814 42.302640 0</gx:coord>
+        <gx:coord>-83.703912 42.302635 0</gx:coord>
+        <gx:coord>-83.704011 42.302631 0</gx:coord>
+        <gx:coord>-83.704109 42.302626 0</gx:coord>
+        <!-- Seg 4: 5-second stop at (42.302626,-83.704109) with GPS noise (~±0.5 m) -->
+        <gx:coord>-83.704117 42.302631 0</gx:coord>
+        <gx:coord>-83.704103 42.302622 0</gx:coord>
+        <gx:coord>-83.704113 42.302629 0</gx:coord>
+        <gx:coord>-83.704106 42.302624 0</gx:coord>
+        <!-- Seg 5: resume → WP3 (42.302612,-83.704942), 9 intervals -->
+        <gx:coord>-83.704109 42.302626 0</gx:coord>
+        <gx:coord>-83.704213 42.302624 0</gx:coord>
+        <gx:coord>-83.704318 42.302623 0</gx:coord>
+        <gx:coord>-83.704422 42.302621 0</gx:coord>
+        <gx:coord>-83.704526 42.302619 0</gx:coord>
+        <gx:coord>-83.704630 42.302618 0</gx:coord>
+        <gx:coord>-83.704735 42.302616 0</gx:coord>
+        <gx:coord>-83.704839 42.302614 0</gx:coord>
+        <gx:coord>-83.704942 42.302612 0</gx:coord>
+        <!-- Seg 6: WP3 → end (42.302596,-83.705596), 6 intervals -->
+        <gx:coord>-83.705051 42.302609 0</gx:coord>
+        <gx:coord>-83.705160 42.302607 0</gx:coord>
+        <gx:coord>-83.705269 42.302604 0</gx:coord>
+        <gx:coord>-83.705378 42.302601 0</gx:coord>
+        <gx:coord>-83.705487 42.302599 0</gx:coord>
+        <gx:coord>-83.705596 42.302596 0</gx:coord>
+      </gx:Track>
+    </Placemark>
+  </Document>
+</kml>

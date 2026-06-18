@@ -27,6 +27,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -88,8 +91,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path as ComposePath
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -115,6 +126,8 @@ import com.msight.app.client.MSightRoadUserType
 import com.msight.app.client.MSightSdsmEvent
 import com.msight.app.client.MSightSimpleWarning
 import com.msight.app.client.MSightSpatEvent
+import com.msight.app.client.MSightCriticalSpatEvent
+import com.msight.app.client.SpatIntersection
 import com.msight.app.client.SdsmDetectedObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -123,13 +136,23 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.msight.app.client.MSightSignalStateEvent
+import com.msight.app.client.SignalColor
+import com.msight.app.client.MapRefPoint
+import com.msight.app.client.MapLane
+import com.msight.app.client.MSightIntersectionMap
+import com.google.maps.android.compose.Polygon
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
+// Regular-SPaT updates to ignore after a critical SPaT delivers a new phase, to avoid the
+// flicker caused by trailing stale frames on the slower regular stream.
+private const val REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL = 2
 
 private fun generateRandomClientId(): String {
     val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -138,7 +161,7 @@ private fun generateRandomClientId(): String {
 
 enum class SdsmFilter(val label: String) {
     OUSTER("Ouster"),
-    DERQ("DeRQ"),
+    DERQ("Derq"),
     MSIGHT("MSight")
 }
 
@@ -157,6 +180,22 @@ class MainActivity : ComponentActivity() {
     private var warningVisible by mutableStateOf(false)
     private var warningResetKey by mutableStateOf(0)
     private var latestSdsmEvent by mutableStateOf<MSightSdsmEvent?>(null)
+    private var activeIntersectionName by mutableStateOf<String?>(null)
+    private var straightSignalColor by mutableStateOf(SignalColor.UNKNOWN)
+    private var leftSignalColor by mutableStateOf(SignalColor.UNKNOWN)
+    private var showSingleLight by mutableStateOf(false)
+    private var straightGroupIds by mutableStateOf<List<Int>>(emptyList())
+    private var leftGroupIds by mutableStateOf<List<Int>>(emptyList())
+    private var showSpatOverlay by mutableStateOf(true)
+    private val spatMapCache = mutableStateMapOf<String, MSightIntersectionMap?>()
+    // Latest SPaT intersection snapshot per intersection name. Fed by both the regular
+    // (MSightSpatEvent) and critical (MSightCriticalSpatEvent) streams — both carry an
+    // identical SpatIntersection, so either re-renders the lane-overlay signal colors.
+    private val latestSpatIntersections = mutableStateMapOf<String, SpatIntersection>()
+    // Per-intersection count of upcoming regular-SPaT updates to ignore after a critical
+    // SPaT. Critical SPaT delivers a phase change ahead of the regular stream, whose trailing
+    // stale frames would otherwise flicker the color back (new → old → new).
+    private val regularSpatSuppression = mutableMapOf<String, Int>()
 
     private var pendingConfig: MSightClientConfig? = null
     private var activeClient: MSightClient? = null
@@ -190,9 +229,22 @@ class MainActivity : ComponentActivity() {
                         warningVisible = warningVisible,
                         warningResetKey = warningResetKey,
                         latestSdsmEvent = latestSdsmEvent,
+                        activeIntersectionName = activeIntersectionName,
+                        straightSignalColor = straightSignalColor,
+                        leftSignalColor = leftSignalColor,
+                        showSingleLight = showSingleLight,
+                        straightGroupIds = straightGroupIds,
+                        leftGroupIds = leftGroupIds,
+                        showSpatOverlay = showSpatOverlay,
+                        spatMapCache = spatMapCache,
+                        latestSpatIntersections = latestSpatIntersections,
                         isMuted = isMuted,
                         onStart = { config -> requestPermissionsAndStart(config) },
                         onStop = { stopClient() },
+                        onSpatToggle = { enabled ->
+                            showSpatOverlay = enabled
+                            activeClient?.setSpatEnabled(enabled)
+                        },
                         onToggleMute = {
                             val newMuted = !isMuted
                             isMuted = newMuted
@@ -266,7 +318,32 @@ class MainActivity : ComponentActivity() {
                             }
 
                             is MSightSpatEvent -> {
+                                recordSpatIntersection(
+                                    client,
+                                    event.intersectionName ?: event.intersection.name,
+                                    event.intersection,
+                                    isCritical = false
+                                )
                                 Log.d("MSight-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
+                            }
+
+                            is MSightCriticalSpatEvent -> {
+                                recordSpatIntersection(
+                                    client,
+                                    event.intersectionName ?: event.intersection.name,
+                                    event.intersection,
+                                    isCritical = true
+                                )
+                                Log.d("MSight-CRITICAL-SPAT", "sensor=${event.sensorName} name=${event.intersectionName} intId=${event.intersection.id.id} signals=${event.intersection.states.size}")
+                            }
+
+                            is MSightSignalStateEvent -> {
+                                activeIntersectionName = event.intersectionName
+                                straightSignalColor = event.straightColor
+                                leftSignalColor = event.leftTurnColor
+                                showSingleLight = event.showSingleLight
+                                straightGroupIds = event.straightSignalGroupIds
+                                leftGroupIds = event.leftTurnSignalGroupIds
                             }
 
                             else -> {
@@ -277,11 +354,46 @@ class MainActivity : ComponentActivity() {
                 }
 
                 client.start()
+                client.setSpatEnabled(showSpatOverlay)
                 clientState = ClientState.Running(config)
             } catch (e: Exception) {
                 Log.e("MSight", "Failed to start MSightClient: $e")
                 activeClient = null
                 clientState = ClientState.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    // Records the latest SPaT intersection snapshot (from either the regular or critical
+    // stream) so the lane-overlay colors re-render, and lazily loads the matching map once.
+    // After a critical SPaT, the next few stale regular updates are suppressed to avoid a
+    // color flicker — see [regularSpatSuppression].
+    private fun recordSpatIntersection(
+        client: MSightClient,
+        intersectionName: String?,
+        intersection: SpatIntersection,
+        isCritical: Boolean
+    ) {
+        val intName = intersectionName ?: return
+
+        if (isCritical) {
+            regularSpatSuppression[intName] = REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL
+        } else {
+            val remaining = regularSpatSuppression[intName] ?: 0
+            if (remaining > 0) {
+                regularSpatSuppression[intName] = remaining - 1
+                return
+            }
+        }
+
+        latestSpatIntersections[intName] = intersection
+        if (!spatMapCache.containsKey(intName)) {
+            spatMapCache[intName] = null
+            Log.d("MSight-SPAT-B", "Initiating map load for intName=$intName")
+            lifecycleScope.launch(Dispatchers.IO) {
+                val result = client.loadMapsByName(intName).firstOrNull()
+                Log.d("MSight-SPAT-B", "Map load result for intName=$intName: ${result?.name ?: "null (no map)"}")
+                spatMapCache[intName] = result
             }
         }
     }
@@ -301,6 +413,15 @@ class MainActivity : ComponentActivity() {
                 clientState = ClientState.Idle
                 latestLocation = null
                 warningVisible = false
+                activeIntersectionName = null
+                straightSignalColor = SignalColor.UNKNOWN
+                leftSignalColor = SignalColor.UNKNOWN
+                showSingleLight = false
+                straightGroupIds = emptyList()
+                leftGroupIds = emptyList()
+                spatMapCache.clear()
+                latestSpatIntersections.clear()
+                regularSpatSuppression.clear()
             }
         }
     }
@@ -360,6 +481,7 @@ class MainActivity : ComponentActivity() {
         }
         warningPlayer = null
     }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -371,9 +493,19 @@ fun MSightScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    activeIntersectionName: String?,
+    straightSignalColor: SignalColor,
+    leftSignalColor: SignalColor,
+    showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>,
+    showSpatOverlay: Boolean,
+    spatMapCache: Map<String, MSightIntersectionMap?>,
+    latestSpatIntersections: Map<String, SpatIntersection>,
     isMuted: Boolean,
     onStart: (MSightClientConfig) -> Unit,
     onStop: () -> Unit,
+    onSpatToggle: (Boolean) -> Unit,
     onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
@@ -396,8 +528,18 @@ fun MSightScreen(
             warningVisible = warningVisible,
             warningResetKey = warningResetKey,
             latestSdsmEvent = latestSdsmEvent,
+            activeIntersectionName = activeIntersectionName,
+            straightSignalColor = straightSignalColor,
+            leftSignalColor = leftSignalColor,
+            showSingleLight = showSingleLight,
+            straightGroupIds = straightGroupIds,
+            leftGroupIds = leftGroupIds,
+            showSpatOverlay = showSpatOverlay,
+            spatMapCache = spatMapCache,
+            latestSpatIntersections = latestSpatIntersections,
             isMuted = isMuted,
             onStop = onStop,
+            onSpatToggle = onSpatToggle,
             onToggleMute = onToggleMute,
             onDismissWarning = onDismissWarning
         )
@@ -590,8 +732,18 @@ private fun ActiveMapScreen(
     warningVisible: Boolean,
     warningResetKey: Int,
     latestSdsmEvent: MSightSdsmEvent?,
+    activeIntersectionName: String?,
+    straightSignalColor: SignalColor,
+    leftSignalColor: SignalColor,
+    showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>,
+    showSpatOverlay: Boolean,
+    spatMapCache: Map<String, MSightIntersectionMap?>,
+    latestSpatIntersections: Map<String, SpatIntersection>,
     isMuted: Boolean,
     onStop: () -> Unit,
+    onSpatToggle: (Boolean) -> Unit,
     onToggleMute: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
@@ -697,6 +849,15 @@ private fun ActiveMapScreen(
         }
     }
 
+    SideEffect {
+        val loadedMaps = spatMapCache.values.count { it != null }
+        Log.d("MSight-B-UI", "recompose overlay=$showSpatOverlay events=${latestSpatIntersections.size} loadedMaps=$loadedMaps")
+        latestSpatIntersections.forEach { (name, _) ->
+            val m = spatMapCache[name]
+            Log.d("MSight-B-UI", "  $name map=${m?.name ?: "null"} arms=${m?.arms?.size ?: 0}")
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
@@ -732,6 +893,35 @@ private fun ActiveMapScreen(
                         title = "${entryObj.objectType} #${entryObj.objectID}",
                         snippet = "spd=${entryObj.speed} hdg=${String.format(Locale.US, "%.1f", entryObj.heading)}°"
                     )
+                }
+            }
+
+            // task_B: render one merged rectangle per signal group per arm
+            latestSpatIntersections.forEach forEachIntersection@{ (name, intersection) ->
+                val intMap = spatMapCache[name] ?: return@forEachIntersection
+                val statesByGroup = intersection.states.associateBy { it.signalGroup }
+                intMap.arms.forEach { arm ->
+                    // Group ingress lanes by unique signal group; dedup duplicate connections
+                    val lanesBySignalGroup = mutableMapOf<Int, MutableList<MapLane>>()
+                    arm.ingressLanes.forEach { lane ->
+                        lane.connections.map { it.signalGroup }.toSet().forEach { sg ->
+                            lanesBySignalGroup.getOrPut(sg) { mutableListOf() }.add(lane)
+                        }
+                    }
+                    lanesBySignalGroup.forEach forEachGroup@{ (sg, lanes) ->
+                        val color = statesByGroup[sg]
+                            ?.stateTimeSpeed?.firstOrNull()?.eventState
+                            ?.let { SignalColor.fromEventState(it) }
+                            ?: SignalColor.UNKNOWN
+                        val corners = mergedLaneRectangleCorners(intMap.refPoint, lanes)
+                            ?: return@forEachGroup
+                        Polygon(
+                            points = corners,
+                            fillColor = color.toMapOverlayFill(),
+                            strokeColor = color.toMapOverlayFill(),
+                            strokeWidth = 0f
+                        )
+                    }
                 }
             }
         }
@@ -791,33 +981,51 @@ private fun ActiveMapScreen(
                     tint = Color.White
                 )
             }
-        }
-
-        // Bottom-center STOP button
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(bottom = 32.dp)
-        ) {
-            Button(
+            // SPaT display toggle
+            FloatingActionButton(
+                onClick = { onSpatToggle(!showSpatOverlay) },
+                containerColor = if (showSpatOverlay) Color(0xFF2E7D32) else Color(0xFF607D8B),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "HUD",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
+                    )
+                    Text(
+                        text = "SPaT",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 11.sp
+                    )
+                    Text(
+                        text = if (showSpatOverlay) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 10.sp
+                    )
+                }
+            }
+            // STOP button
+            FloatingActionButton(
                 onClick = onStop,
-                modifier = Modifier
-                    .height(52.dp)
-                    .width(160.dp),
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                elevation = ButtonDefaults.buttonElevation(
-                    defaultElevation = 8.dp,
-                    pressedElevation = 2.dp
-                )
+                containerColor = Color(0xFFD32F2F),
+                modifier = Modifier.size(48.dp)
             ) {
                 Text(
-                    text = "STOP",
+                    text = "EXIT",
                     color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 3.sp
+                    letterSpacing = 1.sp
                 )
             }
         }
@@ -868,6 +1076,27 @@ private fun ActiveMapScreen(
             exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(tween(200))
         ) {
             InfoPanel(clientState = clientState, latestLocation = latestLocation)
+        }
+
+        // Signal light overlay — shown when approaching an intersection and SPaT display is enabled
+        if (showSpatOverlay && activeIntersectionName != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 4.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                SignalOverlay(
+                    intersectionName = activeIntersectionName,
+                    straightColor = straightSignalColor,
+                    leftColor = leftSignalColor,
+                    showSingleLight = showSingleLight,
+                    straightGroupIds = straightGroupIds,
+                    leftGroupIds = leftGroupIds
+                )
+            }
         }
 
         // Warning banner drops in from top with spring bounce
@@ -921,6 +1150,7 @@ private fun InfoPanel(
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF546E7A)
             )
+
             if (latestLocation == null) {
                 Text(
                     text = "Awaiting first fix...",
@@ -941,7 +1171,7 @@ private fun InfoPanel(
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
+private fun InfoRow(label: String, value: String, valueColor: Color = Color(0xFF212121)) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
@@ -955,7 +1185,8 @@ private fun InfoRow(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF212121)
+            color = valueColor,
+            fontWeight = if (valueColor != Color(0xFF212121)) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
@@ -1205,6 +1436,236 @@ private fun computeObjectLatLon(
     return Pair(Math.toDegrees(φ3), Math.toDegrees(λ3))
 }
 
+private fun SignalColor.toComposeColor(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0xFF4CAF50)
+    SignalColor.YELLOW  -> Color(0xFFFFC107)
+    SignalColor.RED     -> Color(0xFFF44336)
+    SignalColor.UNKNOWN -> Color(0xFF607D8B)
+}
+
+private enum class SignalDirection { STRAIGHT, LEFT }
+
+@Composable
+private fun SignalOverlay(
+    intersectionName: String,
+    straightColor: SignalColor,
+    leftColor: SignalColor,
+    showSingleLight: Boolean,
+    straightGroupIds: List<Int>,
+    leftGroupIds: List<Int>
+) {
+    Card(
+        modifier = Modifier.widthIn(max = 255.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0x9906081A)),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
+        border = BorderStroke(1.2.dp, Color(0xFF1E2D5A).copy(alpha = 0.35f))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = intersectionName,
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            // Arrow panels
+            if (showSingleLight) {
+                val singleColor = if (straightColor != SignalColor.UNKNOWN) straightColor else leftColor
+                val singleIds = if (straightGroupIds.isNotEmpty()) straightGroupIds else leftGroupIds
+                SignalArrowPanel(
+                    color = singleColor,
+                    direction = SignalDirection.STRAIGHT,
+                    groupIds = singleIds
+                )
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SignalArrowPanel(
+                        color = leftColor,
+                        direction = SignalDirection.LEFT,
+                        groupIds = leftGroupIds
+                    )
+                    SignalArrowPanel(
+                        color = straightColor,
+                        direction = SignalDirection.STRAIGHT,
+                        groupIds = straightGroupIds
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalArrowPanel(
+    color: SignalColor,
+    direction: SignalDirection,
+    groupIds: List<Int> = emptyList()
+) {
+    val signalColor = color.toComposeColor()
+    val isOn = color != SignalColor.UNKNOWN
+    val accent = if (isOn) signalColor else Color(0xFF3A4263)
+
+    Box(
+        modifier = Modifier
+            .size(width = 110.dp, height = 85.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = if (isOn) listOf(
+                        signalColor.copy(alpha = 0.12f),
+                        Color(0x80080A1E),
+                        signalColor.copy(alpha = 0.07f)
+                    ) else listOf(
+                        Color(0x99131630),
+                        Color(0x800A0C20)
+                    )
+                )
+            )
+            .border(
+                width = 1.5.dp,
+                brush = Brush.verticalGradient(
+                    colors = if (isOn) listOf(
+                        signalColor.copy(alpha = 0.70f),
+                        signalColor.copy(alpha = 0.25f),
+                        signalColor.copy(alpha = 0.70f)
+                    ) else listOf(
+                        Color(0xFF20264A).copy(alpha = 0.7f),
+                        Color(0xFF20264A).copy(alpha = 0.4f)
+                    )
+                ),
+                shape = RoundedCornerShape(20.dp)
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier.size(width = 80.dp, height = 70.dp)
+        ) {
+            when (direction) {
+                SignalDirection.STRAIGHT -> drawNeonStraightArrow(accent, isOn)
+                SignalDirection.LEFT -> drawNeonLeftArrow(accent, isOn)
+            }
+        }
+        if (!isOn && groupIds.isNotEmpty()) {
+            Text(
+                text = groupIds.joinToString(","),
+                color = Color.White.copy(alpha = 0.75f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 8.dp)
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawNeonStraightArrow(color: Color, withGlow: Boolean) {
+    val w = size.width
+    val h = size.height
+    val cx = w / 2f
+    val shaftBottom = h * 0.92f
+    val shaftTop = h * 0.36f
+    // Compact, narrow arrowhead — half-angle ~31° (full tip ~62°), about 30% smaller
+    // than the previous head in both width and height.
+    val tipY = h * 0.10f
+    val headBaseY = h * 0.40f
+    val headHalf = w * 0.18f
+    val coreStroke = w * 0.20f
+
+    val shaft = ComposePath().apply {
+        moveTo(cx, shaftBottom)
+        lineTo(cx, shaftTop)
+    }
+    val head = ComposePath().apply {
+        moveTo(cx - headHalf, headBaseY)
+        lineTo(cx, tipY)
+        lineTo(cx + headHalf, headBaseY)
+    }
+    drawNeonPath(shaft, color, coreStroke, withGlow)
+    drawNeonPath(head, color, coreStroke, withGlow)
+}
+
+/**
+ * Dedicated left-turn signal arrow: vertical shaft on the right that bends through a
+ * generous rounded corner into a short horizontal segment ending in a leftward chevron.
+ *
+ * The corner radius is intentionally large (~30% of canvas width) so the turn reads as a
+ * smooth J-curve rather than a sharp L. The whole shape sits in the upper half of the
+ * canvas so the curve and arrowhead get visual prominence and the bottom of the panel
+ * stays clean.
+ */
+private fun DrawScope.drawNeonLeftArrow(color: Color, withGlow: Boolean) {
+    val w = size.width
+    val h = size.height
+    val coreStroke = w * 0.18f
+    val rightX = w * 0.78f         // shifted right within the canvas
+    val bottomY = h * 0.88f
+    val turnY = h * 0.22f          // higher in canvas than before
+    val cornerR = w * 0.30f        // larger radius → smoother bend
+    val headBaseX = w * 0.28f      // shifted right with the rest of the shape
+    val tipX = w * 0.10f           // shifted right with the rest of the shape
+    val headHalfY = h * 0.18f
+
+    val shaft = ComposePath().apply {
+        moveTo(rightX, bottomY)
+        lineTo(rightX, turnY + cornerR)
+        // Quadratic with control at the corner approximates a quarter-arc of radius cornerR
+        quadraticBezierTo(rightX, turnY, rightX - cornerR, turnY)
+        lineTo(headBaseX, turnY)
+    }
+    val head = ComposePath().apply {
+        moveTo(headBaseX, turnY - headHalfY)
+        lineTo(tipX, turnY)
+        lineTo(headBaseX, turnY + headHalfY)
+    }
+    drawNeonPath(shaft, color, coreStroke, withGlow)
+    drawNeonPath(head, color, coreStroke, withGlow)
+}
+
+/**
+ * Draws a path with a layered neon-glow effect: wide dim halo, mid glow, bright core,
+ * and a thin white-tinted inner highlight for the polished neon-tube look. When [withGlow]
+ * is false, only the muted core stroke is drawn (used for the UNKNOWN/off state).
+ */
+private fun DrawScope.drawNeonPath(
+    path: ComposePath,
+    color: Color,
+    coreStroke: Float,
+    withGlow: Boolean
+) {
+    if (withGlow) {
+        drawPath(
+            path = path,
+            color = color.copy(alpha = 0.12f),
+            style = Stroke(width = coreStroke * 1.85f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            path = path,
+            color = color.copy(alpha = 0.28f),
+            style = Stroke(width = coreStroke * 1.35f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = coreStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+    if (withGlow) {
+        drawPath(
+            path = path,
+            color = Color.White.copy(alpha = 0.45f),
+            style = Stroke(width = coreStroke * 0.25f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
     val size = 64
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -1256,3 +1717,57 @@ private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitma
 
     return bitmap
 }
+
+private fun offsetToLatLng(ref: MapRefPoint, offsetX: Double, offsetY: Double): LatLng {
+    val lat = ref.lat + offsetY / 111320.0
+    val lon = ref.lon + offsetX / (111320.0 * cos(Math.toRadians(ref.lat)))
+    return LatLng(lat, lon)
+}
+
+private fun mergedLaneRectangleCorners(
+    ref: MapRefPoint,
+    lanes: List<MapLane>,
+    heightM: Double = 1.5
+): List<LatLng>? {
+    // Use the first lane with 2+ nodes to define the approach direction
+    val repLane = lanes.firstOrNull { it.nodes.size >= 2 } ?: return null
+    val p0 = repLane.nodes[0]
+    val p1 = repLane.nodes[1]
+    val dx = p1.offsetX - p0.offsetX
+    val dy = p1.offsetY - p0.offsetY
+    val len = sqrt(dx * dx + dy * dy)
+    if (len < 0.01) return null
+    val dirX = dx / len
+    val dirY = dy / len
+    val perpX = -dirY
+    val perpY = dirX
+
+    // Project each lane's stop-bar node onto the perp axis (relative to p0)
+    // and expand by that lane's half-width to find the total lateral extent
+    var minPerp = Double.MAX_VALUE
+    var maxPerp = -Double.MAX_VALUE
+    for (lane in lanes) {
+        val n0 = lane.nodes.firstOrNull() ?: continue
+        val halfW = n0.widthM / 2.0
+        val perpProj = (n0.offsetX - p0.offsetX) * perpX + (n0.offsetY - p0.offsetY) * perpY
+        if (perpProj - halfW < minPerp) minPerp = perpProj - halfW
+        if (perpProj + halfW > maxPerp) maxPerp = perpProj + halfW
+    }
+    if (minPerp == Double.MAX_VALUE) return null
+
+    // Stop-bar edge at p0; near edge extends toward the intersection centre (-dir)
+    return listOf(
+        offsetToLatLng(ref, p0.offsetX + maxPerp * perpX,                   p0.offsetY + maxPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM + maxPerp * perpX,  p0.offsetY - dirY * heightM + maxPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX - dirX * heightM + minPerp * perpX,  p0.offsetY - dirY * heightM + minPerp * perpY),
+        offsetToLatLng(ref, p0.offsetX + minPerp * perpX,                   p0.offsetY + minPerp * perpY)
+    )
+}
+
+private fun SignalColor.toMapOverlayFill(): Color = when (this) {
+    SignalColor.GREEN   -> Color(0f, 0.85f, 0.38f, 0.50f)
+    SignalColor.YELLOW  -> Color(1f, 0.88f, 0f, 0.50f)
+    SignalColor.RED     -> Color(0.92f, 0.10f, 0.10f, 0.50f)
+    SignalColor.UNKNOWN -> Color(0.45f, 0.55f, 0.60f, 0.25f)
+}
+

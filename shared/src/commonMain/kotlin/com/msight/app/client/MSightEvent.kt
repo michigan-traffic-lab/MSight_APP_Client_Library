@@ -61,6 +61,21 @@ data class MSightSpatEvent(
     val intersection: SpatIntersection
 ) : MSightEvent(timestampMillis)
 
+data class MSightCriticalSpatEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    val sensorName: String,
+    val deviceName: String,
+    val captureTimestamp: Double,
+    val creationTimestamp: Double,
+    /** Optional human-readable intersection name (from message-level field). */
+    val intersectionName: String?,
+    /** Optional name from inside the spat object. */
+    val name: String?,
+    /** The single intersection carried in this critical SPAT message. */
+    val intersection: SpatIntersection
+) : MSightEvent(timestampMillis)
+
 sealed class MSightConflictWarningEvent(
     override val timestampMillis: Long,
     open val ttcSeconds: Double?,
@@ -96,3 +111,18 @@ data class MSightVehicleVRUConflictEvent(
     ttcSeconds = ttcSeconds,
     pretSeconds = pretSeconds
 )
+
+data class MSightSignalStateEvent(
+    override val timestampMillis: Long,
+    override val eventId: String? = null,
+    /** null when the device is not approaching any known intersection */
+    val intersectionName: String?,
+    val straightColor: SignalColor,
+    val leftTurnColor: SignalColor,
+    /** true when the arm has exactly one total signal group covering all movements */
+    val showSingleLight: Boolean = false,
+    /** Signal group IDs for the straight movement on the matched arm (empty when no arm matched) */
+    val straightSignalGroupIds: List<Int> = emptyList(),
+    /** Signal group IDs for the left-turn movement on the matched arm (empty when no arm matched) */
+    val leftTurnSignalGroupIds: List<Int> = emptyList()
+) : MSightEvent(timestampMillis)
