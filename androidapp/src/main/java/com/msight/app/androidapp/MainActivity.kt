@@ -838,7 +838,7 @@ private fun ActiveMapScreen(
                 // First fix: always jump to device location regardless of follow state
                 hasInitialLocation = true
                 isCameraAnimating = true
-                cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(latLng, 20f))
+                cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(latLng, 18.5f))
                 isCameraAnimating = false
             } else if (isFollowingLocation) {
                 // Subsequent fixes: only move if we are in follow mode
@@ -1075,7 +1075,7 @@ private fun ActiveMapScreen(
             enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(tween(250)),
             exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(tween(200))
         ) {
-            InfoPanel(clientState = clientState, latestLocation = latestLocation)
+            InfoPanel(clientState = clientState, latestLocation = latestLocation, zoomLevel = cameraPositionState.position.zoom)
         }
 
         // Signal light overlay — shown when approaching an intersection and SPaT display is enabled
@@ -1122,7 +1122,8 @@ private fun ActiveMapScreen(
 @Composable
 private fun InfoPanel(
     clientState: ClientState,
-    latestLocation: MSightLocationEvent?
+    latestLocation: MSightLocationEvent?,
+    zoomLevel: Float
 ) {
     Card(
         modifier = Modifier.width(260.dp),
@@ -1166,6 +1167,16 @@ private fun InfoPanel(
                 InfoRow("Accuracy", accuracyText)
                 InfoRow("Updated", formatTimestamp(latestLocation.timestampMillis))
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(
+                text = "MAP",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF546E7A)
+            )
+            InfoRow("Zoom", String.format(Locale.US, "%.1f", zoomLevel))
         }
     }
 }
