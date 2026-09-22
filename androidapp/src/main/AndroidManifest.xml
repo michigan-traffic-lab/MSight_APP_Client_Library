@@ -13,9 +13,14 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Msightappclientlibrary">
+        <!--
+          Injected from MAPS_API_KEY in the gitignored local.properties (or the environment) by
+          androidapp/build.gradle.kts — never hard-code a key here. An empty value builds and
+          runs fine; only the map renders blank.
+        -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyCoSxhW8dyn4lcoLC76-1T1cnj2oCa6gS8" />
+            android:value="${mapsApiKey}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

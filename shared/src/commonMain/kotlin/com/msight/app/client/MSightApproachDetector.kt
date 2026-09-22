@@ -8,10 +8,24 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/**
+ * A signal indication as a driver sees it, collapsed from the finer-grained J2735 movement
+ * phase states.
+ *
+ * [UNKNOWN] covers three distinct situations a caller may want to distinguish by context: no SPaT
+ * has arrived yet, the SPaT reports a state with no colour equivalent (dark, flashing), or the
+ * arm's signal groups are absent from the SPaT.
+ */
 enum class SignalColor {
     GREEN, YELLOW, RED, UNKNOWN;
 
     companion object {
+        /**
+         * Maps a J2735 `eventState` string onto a displayable colour.
+         *
+         * `pre-Movement` maps to [RED] because the movement is not yet permitted — a driver
+         * should still be stopped. Anything unrecognised maps to [UNKNOWN] rather than guessing.
+         */
         fun fromEventState(state: String): SignalColor = when {
             state.equals("protected-Movement-Allowed", ignoreCase = true) ||
             state.equals("permissive-Movement-Allowed", ignoreCase = true) -> GREEN
@@ -29,23 +43,58 @@ enum class SignalColor {
     }
 }
 
+/** The intersection and the specific approach arm a device was matched to. */
 data class ApproachResult(
     val intersection: MSightIntersectionMap,
     val arm: MapArm
 )
 
+/** Current signal colours for the movements available from one matched arm. */
 data class ArmSignalState(
     val straightColor: SignalColor,
     val leftTurnColor: SignalColor
 )
 
+/**
+ * Decides which intersection approach a device is on, and what its signal is showing.
+ *
+ * This is the piece that turns two independent cloud feeds — intersection MAP geometry and SPaT
+ * phase state — into something a driver-facing app can display, by answering the question the
+ * cloud cannot answer for a specific device: *which* of the intersection's signal groups is the
+ * one facing this driver.
+ *
+ * Both functions are pure and stateless; the frame-to-frame hysteresis that keeps a display from
+ * flickering lives in the client's signal processor, not here.
+ */
 object MSightApproachDetector {
 
+    /** Beyond this distance from an intersection's reference point, no approach is reported. */
     private const val APPROACH_DISTANCE_METERS = 150.0
+
+    /**
+     * Maximum allowed difference between the device's heading and the lane's direction of travel.
+     * Wide enough to tolerate consumer-GNSS heading noise and a curving approach, tight enough to
+     * reject the opposing arm, whose bearing differs by 180°.
+     */
     private const val HEADING_TOLERANCE_DEG = 25.0
+
+    /**
+     * How far off a lane's centreline a device may be, as a multiple of the lane's own width.
+     * At 1.0, a position must fall within roughly one lane width of the centreline, which is
+     * about the limit of what GNSS accuracy can resolve between adjacent lanes anyway.
+     */
     private const val SEGMENT_WIDTH_MULTIPLIER = 1.00
+
+    /** Speed above which the GNSS-reported bearing is trusted as the direction of travel. */
     private const val MOVING_SPEED_THRESHOLD_MPS = 2.0f
+
+    /**
+     * Minimum displacement between two fixes before their difference is used to infer a heading.
+     * Shorter baselines are indistinguishable from GNSS jitter.
+     */
     private const val MIN_BASELINE_METERS = 10.0
+
+    /** Flat-earth conversion factor; accurate enough over the span of one intersection. */
     private const val METERS_PER_DEGREE_LAT = 111320.0
 
     /**

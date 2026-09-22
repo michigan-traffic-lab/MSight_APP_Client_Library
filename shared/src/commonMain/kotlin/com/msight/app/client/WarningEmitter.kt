@@ -5,6 +5,16 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.emitAll
 
+/**
+ * A standalone warning channel a host can push into, independent of any cloud connection.
+ *
+ * Its purpose is development and testing: warning UI — banners, sounds, overlay geometry — needs
+ * to be exercised without waiting for a real conflict to occur on a real road. Construct one,
+ * collect [events], and drive it from a debug button.
+ *
+ * It is not wired into [MSightClient]; cloud-delivered warnings arrive on
+ * [MSightClient.events] instead.
+ */
 class WarningEmitter {
     private val _events = MutableSharedFlow<MSightWarningEvent>(
         replay = 0,
@@ -26,6 +36,12 @@ class WarningEmitter {
     }
 }
 
+/**
+ * Canned conflict warnings with plausible geometry, for exercising warning UI offline.
+ *
+ * Coordinates are fixed sample values, so the resulting geometry will not sit anywhere near the
+ * device's real position — these are for checking that a warning renders, not where it renders.
+ */
 object MSightFakeWarnings {
     fun twoVehicleConflict(timestampMillis: Long): MSightTwoVehicleConflictEvent {
         return MSightTwoVehicleConflictEvent(

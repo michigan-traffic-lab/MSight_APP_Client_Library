@@ -148,23 +148,56 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/**
+ * Reference Android application for the MSight client library — "MSight Shield".
+ *
+ * It is a worked example rather than a product: a configuration screen for the values
+ * [MSightClientConfig] needs, and a live map screen that renders everything
+ * [MSightClient.events] emits — the device's own position, roadside SDSM detections as heading-
+ * oriented markers, intersection lane geometry tinted by SPaT phase, and full-screen banners with
+ * an audible alert for incoming warnings.
+ *
+ * Everything cloud-facing lives in the library; this module only observes the event flow and
+ * draws. The parts worth copying into a real application are [MainActivity.startPendingClient]
+ * (how to collect the flow and dispatch on event type) and [MainActivity.requestPermissionsAndStart]
+ * (getting location permission before the client is constructed).
+ */
+
+/** How long a warning banner stays up before dismissing itself. */
 private const val WARNING_AUTO_DISMISS_MILLIS = 3_000L
+
+/**
+ * Gap between hiding one warning banner and showing the next, so that a replacement reads as a
+ * new alert instead of a silent text change.
+ */
 private const val WARNING_RESHOW_DELAY_MILLIS = 180L
 // Regular-SPaT updates to ignore after a critical SPaT delivers a new phase, to avoid the
 // flicker caused by trailing stale frames on the slower regular stream.
 private const val REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL = 2
 
+/**
+ * Generates a random `client_id`.
+ *
+ * Two live connections sharing a client id collide in the cloud's connection registry, so the
+ * demo generates a fresh one per launch — which also makes it safe to run on several test devices
+ * at once. A real application should persist one per install instead.
+ */
 private fun generateRandomClientId(): String {
     val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
     return "client-" + (1..8).map { chars.random() }.joinToString("")
 }
 
+/**
+ * Sensor sources whose SDSM detections the demo can show, for field testing at an intersection
+ * instrumented by more than one vendor.
+ */
 enum class SdsmFilter(val label: String) {
     OUSTER("Ouster"),
     DERQ("Derq"),
     MSIGHT("MSight")
 }
 
+/** Which screen to show, and why: the config form, or the live map. */
 sealed class ClientState {
     object Idle : ClientState()
     object Starting : ClientState()
@@ -172,6 +205,15 @@ sealed class ClientState {
     data class Error(val message: String) : ClientState()
 }
 
+/**
+ * Single-activity host. Owns the [MSightClient], mirrors its event stream into Compose state, and
+ * hands that state to [MSightScreen].
+ *
+ * State is held as `mutableStateOf` properties on the activity rather than in a ViewModel to keep
+ * the example's data flow short enough to read in one pass. A production app would want a
+ * ViewModel, and a foreground service if the client has to keep running when the app is
+ * backgrounded.
+ */
 class MainActivity : ComponentActivity() {
 
     private var clientState by mutableStateOf<ClientState>(ClientState.Idle)
@@ -218,6 +260,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Keep the screen awake: this is a driver-facing display that has to stay visible for a
+        // whole drive without being touched.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MsightappclientlibraryTheme {
@@ -270,6 +314,13 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /**
+     * Ensures location permission is held, then starts the client.
+     *
+     * The order is load-bearing: [PlatformLocationProvider] assumes permission has already been
+     * granted, so the config is parked in [pendingConfig] and the client is only constructed once
+     * the permission result is in — either immediately, or from the permission callback.
+     */
     private fun requestPermissionsAndStart(config: MSightClientConfig) {
         pendingConfig = config
         val fineGranted = ContextCompat.checkSelfPermission(
@@ -291,6 +342,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Constructs the client, subscribes to its events, and starts it. This is the integration
+     * the rest of the example exists to demonstrate.
+     *
+     * Runs on [Dispatchers.IO] because the [MSightClient] constructor blocks until the cloud
+     * connection is established — on the main thread that would stall the UI, and a failure to
+     * connect surfaces here as a caught exception rather than as an ANR.
+     *
+     * Collection is launched *before* [MSightClient.start] so no early event is missed: the
+     * event flow has no replay buffer.
+     */
     private fun startPendingClient() {
         val config = pendingConfig ?: return
         pendingConfig = null
@@ -398,6 +460,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Closes the client and resets every piece of derived UI state back to its idle value.
+     *
+     * Clearing it all explicitly matters because a closed [MSightClient] emits no take-down
+     * events — nothing else will come along to tell the UI that the signal overlay and warning
+     * banner should go away.
+     */
     private fun stopClient() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -426,6 +495,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Shows a warning banner with sound, auto-dismissing after
+     * [WARNING_AUTO_DISMISS_MILLIS].
+     *
+     * The cloud re-broadcasts an ongoing hazard repeatedly under one `event_id`, so a repeat of
+     * the warning already on screen extends its timeout instead of restarting the animation and
+     * the alert tone — a hazard that persists for several seconds should read as one continuous
+     * warning, not a stutter.
+     */
     private fun showWarning(warning: MSightSimpleWarning) {
         val isSameEvent = warningVisible
                 && warning.eventId != null
@@ -457,6 +535,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Plays the looping alert tone.
+     *
+     * `USAGE_ALARM` is deliberate: it lets the tone through over music or navigation audio, and
+     * is not silenced by the ringer being down — a safety warning that the driver cannot hear is
+     * not a warning.
+     */
     private fun startWarningSound() {
         stopWarningSound()
         warningPlayer = MediaPlayer.create(
@@ -484,6 +569,12 @@ class MainActivity : ComponentActivity() {
 
 }
 
+/**
+ * Top-level screen switch: the configuration form while idle, the live map once running.
+ *
+ * The form's field values are hoisted here rather than into [ConfigScreen] so that stopping the
+ * client and returning to the form preserves what was typed.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MSightScreen(
@@ -512,7 +603,10 @@ fun MSightScreen(
     val isActive = clientState is ClientState.Running || clientState is ClientState.Starting
 
     // Config state lives here so it survives screen transitions
-    var cloudUrl by remember { mutableStateOf("https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com") }
+    // Deliberately blank: a cloud URL is specific to your own MSight Cloud deployment, and
+    // shipping one would both expose that deployment and let a misconfigured build connect
+    // somewhere unintended. Enter the HttpApiUrl your CDK deploy printed.
+    var cloudUrl by remember { mutableStateOf("") }
     var appId by remember { mutableStateOf("msight-demo") }
     var clientId by remember { mutableStateOf(generateRandomClientId()) }
     var roadUserType by remember { mutableStateOf(MSightRoadUserType.VEHICLE) }
@@ -578,6 +672,7 @@ fun MSightScreen(
     }
 }
 
+/** Form for the fields of [MSightClientConfig], plus the Start button. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConfigScreen(
@@ -621,6 +716,8 @@ private fun ConfigScreen(
                 value = cloudUrl,
                 onValueChange = onCloudUrlChange,
                 label = { Text("Cloud URL") },
+                placeholder = { Text("https://your-deployment.example.com") },
+                supportingText = { Text("Your MSight Cloud deployment's HttpApiUrl") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -705,8 +802,11 @@ private fun ConfigScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
+            // Guard the three fields the client genuinely cannot work without, so a missing one
+            // shows as a disabled button rather than as a connection failure later.
             Button(
                 onClick = onStart,
+                enabled = cloudUrl.isNotBlank() && appId.isNotBlank() && clientId.isNotBlank(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
@@ -724,6 +824,20 @@ private fun ConfigScreen(
     }
 }
 
+/**
+ * The live screen: a Google map showing the device, nearby SDSM detections, signal-tinted lane
+ * geometry, the signal overlay and warning banners.
+ *
+ * Three details here are worth carrying into any similar UI:
+ *  - **Split frames.** One logical SDSM frame can arrive as several messages, so detections
+ *    within 50 ms of the last frame's timestamp are merged into the existing marker set instead
+ *    of replacing it — otherwise each fragment would wipe out the objects the others carried.
+ *  - **Stable marker identity.** Markers are kept in a map keyed by `objectID` and updated in
+ *    place, so a tracked object keeps its marker across frames rather than being destroyed and
+ *    recreated, which visibly flashes.
+ *  - **Follow mode.** The camera follows the device until the user pans, which is detected by
+ *    watching for camera movement that the app did not itself initiate.
+ */
 @Composable
 private fun ActiveMapScreen(
     clientState: ClientState,
@@ -1119,6 +1233,7 @@ private fun ActiveMapScreen(
     }
 }
 
+/** Collapsible diagnostics panel: the client's config plus the most recent GNSS fix. */
 @Composable
 private fun InfoPanel(
     clientState: ClientState,
@@ -1191,6 +1306,7 @@ private fun InfoRow(label: String, value: String, valueColor: Color = Color(0xFF
     }
 }
 
+/** Connection-state badge, with a pulsing dot so a live client is distinguishable at a glance. */
 @Composable
 private fun StatusBadge(clientState: ClientState) {
     val (label, color) = when (clientState) {
@@ -1226,6 +1342,7 @@ private fun StatusBadge(clientState: ClientState) {
     }
 }
 
+/** Full-width alert banner for an [MSightSimpleWarning], with a dismiss action. */
 @Composable
 private fun WarningBanner(
     warning: MSightSimpleWarning?,
@@ -1357,6 +1474,7 @@ private fun WarningBanner(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+/** Generic dropdown for selecting one value of an enum, used by the config form. */
 @Composable
 private fun <T> EnumDropdown(
     label: String,
@@ -1410,9 +1528,16 @@ private fun formatCoordinate(value: Double): String =
     String.format(Locale.US, "%.6f", value)
 
 /**
- * Mirrors the JS geolib logic:
+ * Converts an SDSM object offset into absolute coordinates by walking two great-circle legs from
+ * the message's reference position. Mirrors the JS geolib logic used by MSight's web clients, so
+ * that both render a detection in the same place:
  *  Step 1 – move offsetX metres northward  (bearing = 0°)
  *  Step 2 – move offsetY metres eastward   (bearing = 90°)
+ *
+ * The north/east assignment is correct and deliberate: the SDSM stream orders these axes the
+ * reverse of J2735's usual east/north convention, which MAP geometry ([MapLaneNode]) does follow.
+ * Do not "fix" this to match the MAP side — swapping the pair puts every detection at right
+ * angles to where it actually is.
  */
 private fun computeObjectLatLon(
     refLat: Double, refLon: Double,
@@ -1445,6 +1570,14 @@ private fun SignalColor.toComposeColor(): Color = when (this) {
 
 private enum class SignalDirection { STRAIGHT, LEFT }
 
+/**
+ * The driver-facing signal display, fed by [MSightSignalStateEvent].
+ *
+ * Shows a single indication when the matched arm has one signal group covering every movement,
+ * and separate left-turn and through arrows when it has more — the distinction
+ * [MSightSignalStateEvent.showSingleLight] carries. Renders nothing when no intersection is
+ * matched.
+ */
 @Composable
 private fun SignalOverlay(
     intersectionName: String,
@@ -1502,6 +1635,10 @@ private fun SignalOverlay(
     }
 }
 
+/**
+ * One signal indication: a neon-styled arrow for its movement, lit in the phase colour, dimmed
+ * with no glow when the phase is [SignalColor.UNKNOWN].
+ */
 @Composable
 private fun SignalArrowPanel(
     color: SignalColor,
@@ -1634,6 +1771,10 @@ private fun DrawScope.drawNeonLeftArrow(color: Color, withGlow: Boolean) {
  * and a thin white-tinted inner highlight for the polished neon-tube look. When [withGlow]
  * is false, only the muted core stroke is drawn (used for the UNKNOWN/off state).
  */
+/**
+ * Strokes a path twice — a wide translucent pass for the glow, then the crisp line on top — which
+ * is how the arrows read as illuminated without a blur shader.
+ */
 private fun DrawScope.drawNeonPath(
     path: ComposePath,
     color: Color,
@@ -1666,6 +1807,14 @@ private fun DrawScope.drawNeonPath(
     }
 }
 
+/**
+ * Renders a map marker for one SDSM detection: a coloured dot with a white border, sized and
+ * coloured by object type.
+ *
+ * Google Maps markers take a bitmap rather than a drawing callback, so the icon is rasterised
+ * here. The heading arrow this once drew is commented out below, leaving position-only markers;
+ * [heading] is kept in the signature so it can be restored.
+ */
 private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitmap {
     val size = 64
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -1718,12 +1867,28 @@ private fun createObjectMarkerBitmap(objectType: String, heading: Double): Bitma
     return bitmap
 }
 
+/**
+ * Converts a MAP lane-node offset (east/north metres) to coordinates, flat-earth style. Accurate
+ * enough across the ~200 m an intersection spans, and far cheaper than a great-circle solution
+ * for the hundreds of nodes a lane overlay redraws.
+ */
 private fun offsetToLatLng(ref: MapRefPoint, offsetX: Double, offsetY: Double): LatLng {
     val lat = ref.lat + offsetY / 111320.0
     val lon = ref.lon + offsetX / (111320.0 * cos(Math.toRadians(ref.lat)))
     return LatLng(lat, lon)
 }
 
+/**
+ * Computes the four corners of one stop-bar band spanning a group of lanes.
+ *
+ * Drawing a separate coloured bar per lane would produce a row of disconnected rectangles with
+ * seams between them, so the lanes sharing a signal group are merged into a single band: the
+ * first lane's first two nodes give the approach direction, every lane's stop-bar node is
+ * projected onto the perpendicular axis, and the extremes of that projection become the band's
+ * width.
+ *
+ * Returns null when no lane has enough nodes to establish a direction.
+ */
 private fun mergedLaneRectangleCorners(
     ref: MapRefPoint,
     lanes: List<MapLane>,

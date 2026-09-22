@@ -9,8 +9,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/**
+ * The JVM has no location service, so the context is an empty class a caller subclasses with a
+ * singleton — see `JvmPlatformContext` in `Main.kt`.
+ */
 actual abstract class PlatformContext
 
+/**
+ * Simulated location source for the JVM target.
+ *
+ * The JVM build exists to exercise the cloud connection from a desktop — the WebSocket, the
+ * location upload, the message parsers — without deploying to a phone, so this emits a fixed
+ * position (an intersection in Ann Arbor, Michigan) at 4 Hz rather than reading any real sensor.
+ *
+ * The commented-out drift lines below are how the position is made to move when testing the map
+ * loader's refetch logic or the approach detector, which both need actual displacement.
+ */
 actual class PlatformLocationProvider actual constructor(
     context: PlatformContext
 ) {

@@ -28,6 +28,16 @@ kotlin {
         }
     }
     
+    // iOS is not supported yet. To bring it up:
+    //  1. Uncomment the XCFramework import at the top of this file and the block below.
+    //  2. Add the Ktor Darwin engine to an iosMain source set:
+    //         iosMain.dependencies { implementation("io.ktor:ktor-client-darwin:2.3.12") }
+    //  3. Create shared/src/iosMain/kotlin/com/msight/app/client/ and implement the two
+    //     `expect` declarations the library needs — `createPlatformHttpClient`
+    //     (PlatformHttpClient.kt) and `PlatformContext` / `PlatformLocationProvider`
+    //     (LocationEmitter.kt), the latter over CLLocationManager.
+    // Everything else — protocol handling, MAP geometry, the signal state machine — is already
+    // shared in commonMain and needs no per-platform work.
 //    val xcf = XCFramework()
 //    listOf(
 //        iosX64(),

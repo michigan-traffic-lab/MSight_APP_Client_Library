@@ -48,12 +48,19 @@ import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/** What kind of road user is carrying this device. `VRU` is a vulnerable road user. */
 enum class MSightRoadUserType {
     VEHICLE,
     VRU,
     OTHER
 }
 
+/**
+ * What kind of device the library is running on.
+ *
+ * `IVI` is an in-vehicle infotainment head unit. `LOW_POWER_DEVICE` marks a device where battery
+ * or thermal budget should be favoured over update rate.
+ */
 enum class MSightDeviceType {
     CELLPHONE,
     TABLET,
@@ -62,6 +69,35 @@ enum class MSightDeviceType {
     OTHER
 }
 
+/**
+ * Everything [MSightClient] needs to identify itself to MSight Cloud and decide how often to
+ * report in.
+ *
+ * @property cloudUrl Base URL of the MSight Cloud HTTP API, e.g.
+ *   `https://abc123.execute-api.us-east-2.amazonaws.com`. This is the `HttpApiUrl` output of a
+ *   MSight Cloud deployment; a trailing slash is tolerated. The WebSocket endpoint is discovered
+ *   from it at runtime rather than configured separately.
+ * @property appId Identifier of the application this client belongs to, registered in MSight
+ *   Cloud. The cloud scopes broadcasts by app, so an unregistered `appId` connects successfully
+ *   but receives nothing.
+ * @property clientId Identifier unique to this device within [appId]. Two live connections
+ *   sharing a `clientId` will collide in the cloud's connection registry, so generate one per
+ *   install rather than hard-coding it.
+ * @property roadUserType What kind of road user carries this device. **Reserved — has no effect
+ *   today:** it is neither transmitted nor read, because MSight Cloud's location-update schema
+ *   has no field to carry it yet. It stays a required parameter rather than gaining a default so
+ *   that the values are already accurate when the cloud can accept them; a default would mean
+ *   every existing client silently reporting the same class on the day it starts mattering.
+ * @property roadUserSubType Free-text refinement of [roadUserType], e.g. `passenger_car`,
+ *   `transit_bus`, `pedestrian`. Reserved — see [roadUserType].
+ * @property deviceType What kind of device this is. Reserved — see [roadUserType]. The intended
+ *   use is per-device-class behaviour, such as a lower default update rate on
+ *   [MSightDeviceType.LOW_POWER_DEVICE].
+ * @property locationUpdateFrequencyHz Upper bound on how often a fix is uploaded and emitted, in
+ *   updates per second. The platform is asked for fixes as fast as it will supply them and the
+ *   surplus is dropped here, so raising this costs bandwidth and cloud calls but not GNSS power.
+ *   `0.0` or less disables rate limiting and forwards every fix.
+ */
 data class MSightClientConfig(
     val cloudUrl: String,
     val appId: String,
@@ -72,6 +108,32 @@ data class MSightClientConfig(
     val locationUpdateFrequencyHz: Double = 1.0
 )
 
+/**
+ * The library's entry point: one object that keeps a device connected to MSight Cloud and turns
+ * what the cloud sends into typed [MSightEvent]s.
+ *
+ * Constructing an instance opens the connection — the constructor blocks until the WebSocket is
+ * established or throws if it cannot be. [start] then begins location reporting, which is what
+ * makes the device visible to the cloud's radius-scoped broadcasts; until it is called, the
+ * connection is open but the device is nowhere, so nothing will be pushed to it.
+ *
+ * Internally the client runs five cooperating pieces, all on one [CoroutineScope] that [close]
+ * cancels:
+ *  - a location emitter, which rate-limits platform GNSS fixes;
+ *  - a location uploader, which POSTs each fix so the cloud knows where this client is;
+ *  - a WebSocket connection, which receives every server push and reconnects with backoff;
+ *  - a map loader, which fetches intersection geometry for the area the device is in;
+ *  - a signal processor, which combines geometry, position and SPaT into
+ *    [MSightSignalStateEvent].
+ *
+ * Threading: all callbacks and emissions happen on the client's own dispatcher, not the caller's.
+ * A host driving UI from [events] should hop to its main thread. Events are emitted with
+ * `tryEmit` into a 64-slot buffer, so a collector that cannot keep up loses events rather than
+ * stalling the network reader.
+ *
+ * Lifecycle: `MSightClient(...)` → [start] → collect [events] → [close]. An instance is not
+ * reusable after [close]; construct a new one.
+ */
 class MSightClient(
     private val context: PlatformContext,
     val config: MSightClientConfig
@@ -92,9 +154,28 @@ class MSightClient(
     private var signalProcessor: MSightSignalProcessor? = null
     private val _locationHistory = ArrayDeque<MSightTrajectoryPoint>()
 
+    /**
+     * The single stream of everything this client produces. Hot: events emitted before a
+     * collector subscribes are not replayed.
+     */
     val events: SharedFlow<MSightEvent> = _events.asSharedFlow()
+
+    /**
+     * The device's own recent track, oldest first, trimmed to the last
+     * [TRAJECTORY_HISTORY_MILLIS]. Kept because heading has to be inferred from position history
+     * when the device is stopped or slow and GNSS stops reporting a bearing.
+     */
     val locationHistory: List<MSightTrajectoryPoint> get() = _locationHistory.toList()
 
+    /**
+     * Fetches intersection maps within [radiusMeters] of a point.
+     *
+     * Independent of the automatic loading the client does as the device moves — call this to
+     * pre-load geometry for somewhere the device is not, for example to draw a map of a
+     * corridor ahead.
+     *
+     * Returns an empty list on any failure rather than throwing; the failure is logged.
+     */
     suspend fun loadMapsByLocation(
         lat: Double,
         lon: Double,
@@ -109,6 +190,14 @@ class MSightClient(
         }
     }
 
+    /**
+     * Fetches one intersection map by its MSight Cloud name — the same name that appears as
+     * [MSightSpatEvent.intersectionName], which makes this the way to resolve geometry for an
+     * intersection whose SPaT arrived before its map was loaded.
+     *
+     * Returns a list for symmetry with [loadMapsByLocation]; it holds at most one map, and is
+     * empty if the name is unknown or the request failed.
+     */
     suspend fun loadMapsByName(intersectionName: String): List<MSightIntersectionMap> {
         val baseUrl = config.cloudUrl.trimEnd('/')
         return runCatching {
@@ -120,11 +209,23 @@ class MSightClient(
     }
 
     init {
+        // Connect eagerly, so that a constructed client is a connected client and a host does not
+        // have to handle a half-live object. runBlocking is deliberate: it makes a failure to
+        // reach the cloud surface as a constructor exception the caller can catch, rather than as
+        // an error arriving later on the event flow.
         runBlocking {
             initialize()
         }
     }
 
+    /**
+     * Tears down any existing session and builds a fresh one, returning once the WebSocket is
+     * connected.
+     *
+     * Called by the constructor; call it again only to force a full reconnect, since the
+     * connection already reconnects itself with backoff. Throws if the connection cannot be
+     * established, leaving the client stopped.
+     */
     suspend fun initialize() {
         stop()
 
@@ -149,6 +250,10 @@ class MSightClient(
         locationUploader = initializedLocationUploader
         mapLoader = initializedMapLoader
         signalProcessor = initializedSignalProcessor
+        // Every rate-limited fix fans out to all four consumers plus the public flow. Order
+        // matters: history is updated before the signal processor reads it, and the map loader
+        // runs before the processor so that geometry for a newly entered area is already on its
+        // way when the processor next needs it.
         locationUpdateEmitter = MSightLocationUpdateEmitter(
             context = context,
             updateFrequencyHz = config.locationUpdateFrequencyHz,
@@ -164,6 +269,9 @@ class MSightClient(
             config = config,
             client = httpClient,
             scope = scope,
+            // Re-POST the last fix on every (re)connect. Client locations expire in the cloud,
+            // and after a reconnect this device would otherwise be invisible to radius
+            // broadcasts until its next scheduled location update.
             onConnected = initializedLocationUploader::resendLastKnownLocation,
             onEvent = { event ->
                 if (event is MSightSpatEvent) initializedSignalProcessor.onSpat(event)
@@ -183,10 +291,24 @@ class MSightClient(
         }
     }
 
+    /**
+     * Begins location reporting.
+     *
+     * Required for the device to receive anything: MSight Cloud scopes its pushes by radius
+     * around live client positions, so a client that never reports a position is never in range
+     * of one. The host must already hold location permission.
+     */
     fun start() {
         locationUpdateEmitter?.start()
     }
 
+    /**
+     * Stops location reporting, closes the WebSocket, and discards all session state including
+     * location history.
+     *
+     * The coroutine scope and HTTP client survive, so [initialize] can rebuild a session; use
+     * [close] to release those too.
+     */
     fun stop() {
         locationUpdateEmitter?.stop()
         webSocketConnection?.close()
@@ -200,6 +322,7 @@ class MSightClient(
         _locationHistory.clear()
     }
 
+    /** Appends a fix to the rolling track and drops anything older than the retention window. */
     private fun updateLocationHistory(event: MSightLocationEvent) {
         _locationHistory.addLast(
             MSightTrajectoryPoint(
@@ -217,10 +340,22 @@ class MSightClient(
         }
     }
 
+    /**
+     * Turns [MSightSignalStateEvent] production on or off. Off by default.
+     *
+     * Raw [MSightSpatEvent]s keep flowing regardless — this only controls the derived,
+     * device-specific signal state. Switching it off while a signal is being displayed emits one
+     * final event with a null intersection name, so a host can take its display down without a
+     * special case.
+     */
     fun setSpatEnabled(enabled: Boolean) {
         signalProcessor?.setEnabled(enabled)
     }
 
+    /**
+     * Releases everything: stops the session, cancels the coroutine scope, and closes the HTTP
+     * client. The instance cannot be reused afterwards.
+     */
     fun close() {
         stop()
         scope.cancel()
@@ -228,6 +363,18 @@ class MSightClient(
     }
 }
 
+/**
+ * Wraps [PlatformLocationProvider] with the rate limit from
+ * [MSightClientConfig.locationUpdateFrequencyHz].
+ *
+ * The platform is asked for fixes as fast as it will supply them and the surplus is dropped
+ * here, rather than asking the OS for a slower rate. That keeps the rate limit uniform across
+ * platforms whose location APIs interpret a requested interval differently, and lets a fix be
+ * delivered as soon as the interval elapses instead of waiting on the OS's own schedule.
+ *
+ * Filtering is by fix timestamp, not arrival time, so a burst of buffered fixes from the OS is
+ * thinned correctly rather than passed through.
+ */
 private class MSightLocationUpdateEmitter(
     context: PlatformContext,
     updateFrequencyHz: Double,
@@ -257,6 +404,14 @@ private class MSightLocationUpdateEmitter(
     }
 }
 
+/**
+ * Reports the device's position to MSight Cloud.
+ *
+ * Uploads are fire-and-forget: each one is launched on the client's scope and its failure is
+ * logged but not retried, because the next fix supersedes it anyway and a retry queue would only
+ * push stale positions. The last fix is retained so it can be re-sent on reconnect — see
+ * [resendLastKnownLocation].
+ */
 private class MSightLocationUploader(
     private val config: MSightClientConfig,
     private val client: HttpClient,
@@ -270,6 +425,10 @@ private class MSightLocationUploader(
         uploadInternal(locationEvent)
     }
 
+    /**
+     * Re-sends the most recent fix, if there is one. Called on every WebSocket (re)connect so the
+     * cloud's short-TTL location record is refreshed immediately rather than at the next fix.
+     */
     fun resendLastKnownLocation() {
         val locationEvent = lastKnownLocationEvent ?: return
         logInfo("MSightLocationUploader resending last known location after websocket connect")
@@ -296,10 +455,27 @@ private class MSightLocationUploader(
         }
     }
 
+    /**
+     * Nothing to release — in-flight uploads are cancelled with the client's scope. Kept so the
+     * uploader matches the lifecycle shape of the other components.
+     */
     fun close() {
     }
 }
 
+/**
+ * Holds the WebSocket connection over which MSight Cloud pushes everything, and keeps it held.
+ *
+ * The endpoint is not configured: it is discovered from `GET /system/websocket-url` on each
+ * connection attempt, so a deployment can move its WebSocket without clients being rebuilt. The
+ * connection then carries `app_id` and `client_id` as query parameters, which is how the cloud
+ * registers this device in its connection table.
+ *
+ * Every push is server-initiated; the client never sends a frame. When the socket drops, the
+ * loop re-resolves the URL and reconnects with exponential backoff up to
+ * [MAX_RECONNECT_DELAY_MILLIS], indefinitely — a moving vehicle loses connectivity routinely, so
+ * a drop is treated as normal rather than as an error to report.
+ */
 private class MSightWebSocketConnection(
     private val config: MSightClientConfig,
     private val client: HttpClient,
@@ -307,6 +483,7 @@ private class MSightWebSocketConnection(
     private val onConnected: () -> Unit,
     private val onEvent: (MSightEvent) -> Unit
 ) {
+    /** Connection lifecycle, tracked for diagnostics and to make [initialize] idempotent. */
     enum class State {
         NO_URL_ASSIGNED,
         URL_ASSIGNED,
@@ -321,6 +498,12 @@ private class MSightWebSocketConnection(
     private var websocketUrl: String? = null
     private var state: State = State.NO_URL_ASSIGNED
 
+    /**
+     * Starts the connection loop and suspends until the first connection succeeds, so that a
+     * caller learns about an unreachable cloud immediately. Once connected, the loop keeps
+     * running in the background and later drops are handled by reconnection rather than by
+     * failing this call again.
+     */
     suspend fun initialize() {
         if (state == State.CONNECTED) {
             return
@@ -357,6 +540,11 @@ private class MSightWebSocketConnection(
         connectionReady.await()
     }
 
+    /**
+     * Starts the connection loop without waiting for it — the non-suspending counterpart to
+     * [initialize], for reconnecting after a [close] when no caller is in a position to await
+     * the result.
+     */
     fun connect() {
         if (lifecycleJob != null || state == State.CONNECTED || state == State.RECONNECTING) {
             return
@@ -387,6 +575,15 @@ private class MSightWebSocketConnection(
         state = State.DISCONNECTED
     }
 
+    /**
+     * Resolve URL → connect → serve frames until the socket closes → back off → repeat, for as
+     * long as the scope is active.
+     *
+     * [connectionReady] is completed on the first successful connection, or completed
+     * exceptionally and the loop abandoned if that first attempt fails — an initial failure is
+     * reported to the caller rather than retried silently. Once it has been completed, all later
+     * failures are retried instead.
+     */
     private suspend fun runConnectionLoop(connectionReady: CompletableDeferred<Unit>?) {
         var reconnectDelayMillis = INITIAL_RECONNECT_DELAY_MILLIS
 
@@ -434,6 +631,7 @@ private class MSightWebSocketConnection(
         }
     }
 
+    /** Asks the deployment where its WebSocket lives. Re-resolved on every attempt. */
     private suspend fun fetchWebSocketUrl(): String {
         val response = client.get(websocketUrlEndpoint)
         val responseBody = response.bodyAsText()
@@ -444,6 +642,10 @@ private class MSightWebSocketConnection(
         ) ?: error("websocket_url is missing from /system/websocket-url response")
     }
 
+    /**
+     * Opens the socket and reads frames until it closes. Returning normally means the peer went
+     * away, which the caller treats as a cue to reconnect.
+     */
     private suspend fun connectInternal(
         resolvedWebSocketUrl: String,
         connectionReady: CompletableDeferred<Unit>?
@@ -488,10 +690,22 @@ private class MSightWebSocketConnection(
     }
 }
 
+/** Doubles the backoff delay, capped so a long outage still retries twice a minute. */
 private fun nextReconnectDelayMillis(currentDelayMillis: Long): Long {
     return (currentDelayMillis * 2).coerceAtMost(MAX_RECONNECT_DELAY_MILLIS)
 }
 
+/**
+ * Keeps intersection geometry loaded for wherever the device currently is.
+ *
+ * Fetching on every fix would mean a request per second for data that changes almost never, so
+ * two conditions suppress the call: being inside the area already covered by a loaded map, and
+ * not having moved far since the last fetch. Together they mean a stationary or slow-moving
+ * device settles into making no map requests at all.
+ *
+ * A fetch that returns no maps is not recorded as coverage, so a device that crosses into a
+ * mapped area will try again after moving [MAP_REFETCH_DISTANCE_METERS].
+ */
 private class MSightMapLoader(
     private val config: MSightClientConfig,
     private val client: HttpClient,
@@ -541,10 +755,38 @@ private class MSightMapLoader(
     }
 }
 
+/**
+ * Combines position, intersection geometry and SPaT into [MSightSignalStateEvent] — the signal
+ * colour facing this specific driver.
+ *
+ * The hard part is not the lookup but the stability. Approach detection runs per fix on noisy
+ * consumer GNSS, so a naive implementation flickers: the display appears and disappears as the
+ * detector's heading check passes and fails. Three mechanisms prevent that, and they are why this
+ * class is a state machine rather than a function:
+ *
+ *  - **Locking in (IDLE → ACTIVE).** An arm must be detected [N_LOCK_FRAMES] times in a row
+ *    before anything is displayed, which rejects a momentary match against a crossing arm.
+ *  - **Holding on.** Once locked, the arm stays locked even if the detector later names a
+ *    different one, and a lost detection only counts toward hiding while the device is actually
+ *    moving. Standing at a red light is exactly when heading data degrades and also exactly when
+ *    the driver most needs the display, so a stationary loss of detection is ignored.
+ *  - **Letting go (ACTIVE → HIDING → IDLE).** [N_HIDE_FRAMES] consecutive losses while moving
+ *    means the intersection has been passed, and the display is taken down.
+ *
+ * The fourth mechanism concerns the two SPaT streams: the critical stream reports a phase change
+ * ahead of the rate-limited regular one, whose next frames still carry the old colour. Accepting
+ * those would flash the display back to the previous colour, so a few regular updates are
+ * suppressed after each critical one.
+ */
 private class MSightSignalProcessor(
     private val scope: CoroutineScope,
     private val onSignalState: (MSightSignalStateEvent) -> Unit
 ) {
+    /**
+     * IDLE: nothing displayed, watching for an arm to lock onto.
+     * ACTIVE: an arm is locked and its colours are being emitted.
+     * HIDING: the intersection has been passed; a take-down event is pending.
+     */
     private enum class DisplayState { IDLE, ACTIVE, HIDING }
 
     /** Normalized latest-SPaT snapshot, agnostic to which stream produced it. */
@@ -580,6 +822,10 @@ private class MSightSignalProcessor(
     private var hideJob: Job? = null
     private var enabled = false
 
+    /**
+     * Turns processing on or off. Switching off while a signal is displayed emits a final
+     * take-down event first, so the host never has to infer that it should clear its display.
+     */
     fun setEnabled(enabled: Boolean) {
         if (!enabled && this.enabled && displayState != DisplayState.IDLE) {
             onSignalState(MSightSignalStateEvent(
@@ -597,6 +843,12 @@ private class MSightSignalProcessor(
         loadedMaps = maps
     }
 
+    /**
+     * Runs approach detection for one fix and advances the state machine.
+     *
+     * Ignored while HIDING: the take-down is already committed, and re-detecting the arm the
+     * device has just left would only make the display reappear behind the driver.
+     */
     fun onLocation(locationEvent: MSightLocationEvent, history: List<MSightTrajectoryPoint>) {
         if (!enabled) return
         if (displayState == DisplayState.HIDING) return
@@ -613,6 +865,7 @@ private class MSightSignalProcessor(
         }
     }
 
+    /** Builds the same-arm streak and promotes to ACTIVE once it reaches [N_LOCK_FRAMES]. */
     private fun handleIdle(loc: MSightLocationEvent, result: ApproachResult?) {
         if (result == null) {
             pendingArmId = null
@@ -655,6 +908,10 @@ private class MSightSignalProcessor(
         }
     }
 
+    /**
+     * Re-emits the locked arm's colours each fix, and counts toward HIDING when detection is
+     * lost while moving.
+     */
     private fun handleActive(loc: MSightLocationEvent, result: ApproachResult?) {
         if (result != null) {
             nullFrames = 0
@@ -685,6 +942,7 @@ private class MSightSignalProcessor(
         }
     }
 
+    /** Feeds a routine SPaT update in. Subject to post-critical suppression. */
     fun onSpat(spatEvent: MSightSpatEvent) {
         onSpatUpdate(
             spatEvent.intersectionName,
@@ -694,6 +952,7 @@ private class MSightSignalProcessor(
         )
     }
 
+    /** Feeds a phase-change SPaT update in. Always accepted, and starts the suppression window. */
     fun onCriticalSpat(criticalSpatEvent: MSightCriticalSpatEvent) {
         onSpatUpdate(
             criticalSpatEvent.intersectionName,
@@ -732,11 +991,13 @@ private class MSightSignalProcessor(
         }
     }
 
+    /** Cancels a pending take-down. Called when the whole session is being torn down. */
     fun cancel() {
         hideJob?.cancel()
         hideJob = null
     }
 
+    /** Resolves the locked arm's signal groups against a SPaT snapshot and emits the result. */
     private fun emitSignalState(
         timestampMillis: Long,
         result: ApproachResult,
@@ -755,6 +1016,10 @@ private class MSightSignalProcessor(
         ))
     }
 
+    /**
+     * Enters HIDING and schedules the take-down event. The delay is a seam for holding the
+     * display briefly after the stop bar is crossed; it is currently near-zero.
+     */
     private fun startHiding() {
         displayState = DisplayState.HIDING
         hideJob = scope.launch {
@@ -769,6 +1034,7 @@ private class MSightSignalProcessor(
         }
     }
 
+    /** Returns to IDLE, dropping the locked arm, the SPaT snapshot and all counters. */
     private fun clearState() {
         hideJob?.cancel()
         hideJob = null
@@ -782,6 +1048,17 @@ private class MSightSignalProcessor(
     }
 }
 
+/**
+ * Turns one raw WebSocket frame into a typed event, or null if it is not a message this version
+ * understands.
+ *
+ * Every push arrives in an envelope — `{app_id, event_id, message, server_timestamp}` — whose
+ * `message` holds the actual payload. Both are searched for the discriminator field, because the
+ * cloud's internal pipelines place it in slightly different spots.
+ *
+ * Unrecognised messages return null rather than throwing: the cloud can add message types at any
+ * time, and an older client must keep working when one appears.
+ */
 private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     if (!looksLikeJsonObject(rawMessage)) {
         return null
@@ -815,6 +1092,10 @@ private fun parseSocketMessage(rawMessage: String): MSightEvent? {
     }
 }
 
+/**
+ * Parses a free-text warning, falling back to the envelope's `server_timestamp` when the payload
+ * carries no timestamp of its own, and to the local clock when neither does.
+ */
 private fun parseSimpleWarningEvent(
     envelopeJson: String,
     payloadJson: String,
@@ -849,6 +1130,16 @@ private fun looksLikeJsonObject(value: String): Boolean {
     return trimmed.startsWith("{") && trimmed.endsWith("}")
 }
 
+/**
+ * Extracts a nested JSON object as raw text by brace matching, without building a document.
+ *
+ * Used to lift `message` out of the push envelope before deciding what it is, so the payload can
+ * be handed to whichever parser turns out to be the right one.
+ *
+ * Brace matching ignores string literals, so an object containing a `{` or `}` inside a string
+ * value would be cut short. That is acceptable here because the field it is applied to is always
+ * the envelope's `message`, whose immediate structure the cloud controls.
+ */
 private fun extractJsonObjectField(json: String, fieldName: String): String? {
     val fieldToken = "\"$fieldName\""
     val fieldIndex = json.indexOf(fieldToken)
@@ -882,6 +1173,14 @@ private fun extractJsonObjectField(json: String, fieldName: String): String? {
     return null
 }
 
+/**
+ * Builds the body for `POST /v1/clients/location/update`.
+ *
+ * Optional fields are omitted rather than sent as null, because the cloud's schema validates
+ * them as optional-but-typed and would reject a null. Written by hand instead of with
+ * kotlinx.serialization to keep that omission explicit and avoid a serializer for a single
+ * outbound shape.
+ */
 private fun buildLocationUpdatePayload(
     config: MSightClientConfig,
     locationEvent: MSightLocationEvent
@@ -908,6 +1207,10 @@ private fun buildLocationUpdatePayload(
     """.trimIndent()
 }
 
+/**
+ * Converts an update frequency in Hz to the minimum interval between updates. A non-positive
+ * frequency yields `0`, which disables rate limiting.
+ */
 private fun Double.toMinUpdateIntervalMillis(): Long {
     if (this <= 0.0) {
         return 0L
@@ -916,6 +1219,10 @@ private fun Double.toMinUpdateIntervalMillis(): Long {
     return (1000.0 / this).roundToLong().coerceAtLeast(1L)
 }
 
+/**
+ * Maps a platform location-provider name onto the cloud's `LocationSource` enum. Anything
+ * unrecognised becomes `unknown`, since an out-of-enum value would fail schema validation.
+ */
 private fun String.toLocationSource(): String {
     return when (lowercase()) {
         "gps" -> "gps"
@@ -951,11 +1258,27 @@ private fun jsonString(value: String): String {
     return "\"$escaped\""
 }
 
+/**
+ * Reads a top-level-ish string field out of raw JSON by regex, for the few cases where a full
+ * parse is not worth it — the envelope's discriminator and ids.
+ *
+ * Finds the first match anywhere in the text, nesting included, and does not handle escaped
+ * quotes inside the value. Fine for the identifier fields it is used on; not a general accessor.
+ */
 private fun extractJsonStringField(json: String, fieldName: String): String? {
     val pattern = Regex("\"" + Regex.escape(fieldName) + "\"\\s*:\\s*\"([^\"]+)\"")
     return pattern.find(json)?.groupValues?.getOrNull(1)
 }
 
+/**
+ * Converts the SDSM's own broken-down timestamp to epoch milliseconds.
+ *
+ * `offset` is minutes east of UTC, and `toInstant(UTC)` treats the components as if they were
+ * already UTC, so the offset has to be subtracted afterwards to recover true UTC.
+ *
+ * Returns null if the components do not form a valid date — a malformed frame should be skipped,
+ * not crash the reader.
+ */
 private fun sdsmTimestampToMillis(ts: SdsmTimestamp): Long? {
     return runCatching {
         val secondInt = ts.second.toInt()
@@ -966,6 +1289,10 @@ private fun sdsmTimestampToMillis(ts: SdsmTimestamp): Long? {
     }.getOrNull()
 }
 
+// Logging goes to stdout via println, which is the only output every Kotlin Multiplatform target
+// shares. On Android this surfaces in Logcat. A host wanting structured logging should replace
+// these two functions with a delegate of its own.
+
 private fun logInfo(message: String) {
     println("INFO: $message")
 }
@@ -974,6 +1301,7 @@ private fun logError(message: String) {
     println("ERROR: $message")
 }
 
+/** Renders a throwable with its full cause chain, since the root cause is usually the useful one. */
 private fun describeThrowable(throwable: Throwable): String {
     val segments = mutableListOf<String>()
     var current: Throwable? = throwable
@@ -986,20 +1314,53 @@ private fun describeThrowable(throwable: Throwable): String {
     return segments.joinToString(" <- caused by ")
 }
 
+// ── MSight Cloud API paths ───────────────────────────────────────────────────
+// All relative to MSightClientConfig.cloudUrl. See the deployment's own OpenAPI document at
+// GET /system/docs for the full contract.
+
 private const val LOCATION_UPDATE_PATH = "/v1/clients/location/update"
 private const val WEBSOCKET_URL_PATH = "/system/websocket-url"
+private const val MAP_SEARCH_PATH = "/v1/maps/search"
+private const val MAP_BY_NAME_PATH = "/v1/maps/"
+
+// ── WebSocket reconnection ───────────────────────────────────────────────────
+
 private const val INITIAL_RECONNECT_DELAY_MILLIS = 1_000L
 private const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
+
+// ── Message type discriminators ──────────────────────────────────────────────
+// Values of the `type` field the cloud sets on each push. `msight_simple_warning` belongs to the
+// older `message_type` field, still accepted for compatibility with existing microservices.
+
 private const val SIMPLE_WARNING_MESSAGE_TYPE = "msight_simple_warning"
 private const val SDSM_MESSAGE_TYPE = "sdsm"
 private const val SPAT_MESSAGE_TYPE = "spat"
 private const val CRITICAL_SPAT_MESSAGE_TYPE = "critical_spat"
-private const val MAP_SEARCH_PATH = "/v1/maps/search"
-private const val MAP_BY_NAME_PATH = "/v1/maps/"
+
+// ── Map loading ──────────────────────────────────────────────────────────────
+
+/** Radius passed to the cloud's map search — comfortably more than one intersection's extent. */
 private const val MAP_FETCH_RADIUS_METERS = 150
+
+/**
+ * How close to a loaded map's centre counts as "already covered". Deliberately smaller than
+ * [MAP_FETCH_RADIUS_METERS] so the next fetch is triggered before the device leaves the area the
+ * current maps describe.
+ */
 private const val MAP_LOADED_ZONE_METERS = 100
+
+/** Minimum movement between fetches when outside every loaded map's coverage. */
 private const val MAP_REFETCH_DISTANCE_METERS = 50.0
+
+// ── Signal state machine ─────────────────────────────────────────────────────
+
+/**
+ * How much recent track to retain. Two minutes is enough to hold the last clearly-moving fix
+ * through a full red phase, which is what heading inference falls back on when stopped.
+ */
 private const val TRAJECTORY_HISTORY_MILLIS = 120_000L
+
+/** Delay between deciding the intersection has been passed and emitting the take-down event. */
 private const val POST_PASS_HIDE_DELAY_MILLIS = 50L
 
 // Consecutive same-arm detections required to promote IDLE → ACTIVE.
@@ -1012,8 +1373,17 @@ private const val MOVING_SPEED_THRESHOLD_MPS = 2.0f
 // flicker caused by trailing stale frames on the slower regular stream.
 private const val REGULAR_SPAT_SUPPRESS_AFTER_CRITICAL = 2
 
+/**
+ * Unknown keys are ignored throughout, so that a cloud deployment adding a field to any payload
+ * does not break clients already in the field.
+ */
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
+// ── Message parsing ──────────────────────────────────────────────────────────
+// Each parser returns null on a malformed or incomplete message rather than throwing, so one bad
+// frame is logged and skipped instead of killing the WebSocket reader.
+
+/** Parses an `sdsm` push into an [MSightSdsmEvent]. */
 private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSightSdsmEvent? {
     return try {
         val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
@@ -1071,6 +1441,8 @@ private fun parseSdsmEvent(messageJson: String, eventId: String? = null): MSight
     }
 }
 
+/** Parses a routine `spat` push. Logs which field was missing when it fails, since a silently
+ * dropped SPaT is otherwise hard to distinguish from a signal that is simply not reporting. */
 private fun parseSpatEvent(messageJson: String, eventId: String? = null): MSightSpatEvent? {
     return try {
         val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
@@ -1122,6 +1494,7 @@ private fun parseSpatEvent(messageJson: String, eventId: String? = null): MSight
     }
 }
 
+/** Parses a `critical_spat` push. Same payload as [parseSpatEvent] minus the frame id. */
 private fun parseCriticalSpatEvent(messageJson: String, eventId: String? = null): MSightCriticalSpatEvent? {
     return try {
         val msg = lenientJson.parseToJsonElement(messageJson).jsonObject
@@ -1170,6 +1543,7 @@ private fun parseCriticalSpatEvent(messageJson: String, eventId: String? = null)
     }
 }
 
+/** Parses the `intersection` body shared by both SPaT streams. */
 private fun parseSpatIntersection(obj: JsonObject): SpatIntersection? {
     return try {
         val idObj = obj["id"]?.jsonObject ?: return null
@@ -1198,6 +1572,11 @@ private fun parseSpatIntersection(obj: JsonObject): SpatIntersection? {
     }
 }
 
+/**
+ * Parses one signal group's state list. A `timing` block missing its mandatory `minEndTime` is
+ * treated as absent rather than as a reason to drop the state — the phase colour is still usable
+ * without a countdown.
+ */
 private fun parseSpatMovementState(obj: JsonObject): SpatMovementState? {
     return try {
         val signalGroup = obj["signalGroup"]?.jsonPrimitive?.intOrNull ?: return null
@@ -1225,6 +1604,13 @@ private fun parseSpatMovementState(obj: JsonObject): SpatMovementState? {
     }
 }
 
+/**
+ * Parses one detected object out of an SDSM's `objects` array.
+ *
+ * `detObjOptData` is a J2735 CHOICE, encoded in JSON as a two-element array of
+ * `[discriminator, value]`. Only the `detVeh` branch carries anything the library uses (vehicle
+ * class and bounding box); other branches are skipped.
+ */
 private fun parseDetectedObject(entry: JsonObject): SdsmDetectedObject? {
     return try {
         val common = entry["detObjCommon"]?.jsonObject ?: return null
@@ -1268,6 +1654,7 @@ private fun parseDetectedObject(entry: JsonObject): SdsmDetectedObject? {
 
 // ── Map fetch ────────────────────────────────────────────────────────────────
 
+/** `GET /v1/maps/search` — every intersection map within [radiusMeters] of a point. */
 private suspend fun fetchMapsByLocation(
     client: HttpClient,
     baseUrl: String,
@@ -1280,6 +1667,7 @@ private suspend fun fetchMapsByLocation(
     return parseMapsResponse(response.bodyAsText())
 }
 
+/** `GET /v1/maps/{name}` — one intersection map by name. */
 private suspend fun fetchMapsByName(
     client: HttpClient,
     baseUrl: String,
@@ -1295,6 +1683,13 @@ private suspend fun fetchMapsByName(
 
 // ── Map parsing ──────────────────────────────────────────────────────────────
 
+/**
+ * Parses whichever of the map-response shapes came back.
+ *
+ * The two map endpoints wrap their results differently — a radius search returns `{"maps": [...]}`
+ * while a name lookup returns `{"status": ..., "map": {...}}` — so both are accepted, along with a
+ * bare array or a bare map object, and all normalise to a list.
+ */
 private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
     val trimmed = body.trim()
     if (trimmed.isEmpty()) return emptyList()
@@ -1322,6 +1717,15 @@ private fun parseMapsResponse(body: String): List<MSightIntersectionMap> {
     }
 }
 
+/**
+ * Parses one map record into an [MSightIntersectionMap].
+ *
+ * Only the first intersection in the record's `intersections` array is read: MSight Cloud stores
+ * one intersection per named map, so a second entry would not be addressable by name anyway.
+ *
+ * Anything missing the geometry the library needs — reference point, lane set, intersection id —
+ * yields null, since a partially parsed map would silently produce wrong approach matches.
+ */
 private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
     return try {
         val name = entry["name"]?.jsonPrimitive?.contentOrNull ?: return null
@@ -1369,6 +1773,17 @@ private fun parseMapEntry(entry: JsonObject): MSightIntersectionMap? {
     }
 }
 
+/**
+ * Parses one lane, flattening J2735's relative node deltas into absolute offsets from the
+ * intersection reference point.
+ *
+ * Three running totals are accumulated along the node chain, because J2735 encodes each as a
+ * delta from the previous node: position (`x`/`y`), lane width (`dWidth`, starting from the
+ * intersection default) and elevation (`dElevation`, starting from the reference point). Doing
+ * this once here is what lets [MSightApproachDetector] treat a lane as plain geometry.
+ *
+ * Crosswalk lanes return null — they are not lanes a vehicle approaches on.
+ */
 private fun parseMapLane(laneObj: JsonObject, intersectionLaneWidth: Double, refElevationM: Double?): MapLane? {
     return try {
         // Skip crosswalks
@@ -1428,6 +1843,11 @@ private fun parseMapLane(laneObj: JsonObject, intersectionLaneWidth: Double, ref
     }
 }
 
+/**
+ * Parses one `connectsTo` entry, keeping only its signal group. Which egress lane the movement
+ * leads to is not retained — the library needs to know what governs the movement, not where it
+ * goes.
+ */
 private fun parseMapLaneConnection(connObj: JsonObject): MapLaneConnection? {
     return try {
         val signalGroup = connObj["signalGroup"]?.jsonPrimitive?.intOrNull ?: return null
@@ -1437,6 +1857,23 @@ private fun parseMapLaneConnection(connObj: JsonObject): MapLaneConnection? {
     }
 }
 
+/**
+ * Groups lanes into arms and works out which signal groups govern which movement.
+ *
+ * J2735 records that an ingress lane connects to some egress lane under some signal group, but
+ * not that the movement is "a left turn". The classification here recovers that from lane
+ * ordering, using the fact that a left-turn pocket sits at the inside edge of the roadway:
+ *
+ *  - Its **left** neighbour is an *egress* lane — the opposing direction, across the centreline.
+ *  - A through lane's left neighbour is either another ingress lane or nothing at all.
+ *
+ * A lane whose neighbours match neither pattern (typically a shared through/left lane, with
+ * egress on the left *and* on the right) has its signal groups added to both movements, so it is
+ * reported rather than dropped.
+ *
+ * Right turns are not classified: the geometry does not distinguish a right-turn lane from a
+ * through lane the same way, and a right turn is usually permitted on the through phase anyway.
+ */
 private fun buildMapArms(lanes: List<MapLane>): List<MapArm> {
     val laneById = lanes.associateBy { it.laneID }
     return lanes.groupBy { it.armId }.map { (armId, armLanes) ->
@@ -1472,6 +1909,7 @@ private fun buildMapArms(lanes: List<MapLane>): List<MapArm> {
     }
 }
 
+/** Great-circle distance between two WGS 84 points, in metres. */
 private fun haversineDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val R = 6_371_000.0
     val phi1 = lat1 * PI / 180.0

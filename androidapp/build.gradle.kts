@@ -1,7 +1,29 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.kotlinAndroid)
     alias(libs.plugins.compose.compiler)
+}
+
+/**
+ * Google Maps SDK key for the example app's map, read from the gitignored `local.properties` so
+ * it is never committed. Set `MAPS_API_KEY=...` there, or supply it as the `MAPS_API_KEY`
+ * environment variable in CI.
+ *
+ * Absent, the build still succeeds and the app still runs — only the map renders blank, which is
+ * the right trade for a module whose point is demonstrating the client library rather than the
+ * map.
+ */
+val mapsApiKey: String = run {
+    val localProperties = rootProject.file("local.properties")
+    val fromFile = if (localProperties.exists()) {
+        Properties().apply { localProperties.inputStream().use { load(it) } }
+            .getProperty("MAPS_API_KEY")
+    } else {
+        null
+    }
+    fromFile ?: System.getenv("MAPS_API_KEY") ?: ""
 }
 
 android {
@@ -16,6 +38,8 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        manifestPlaceholders["mapsApiKey"] = mapsApiKey
     }
 
     buildTypes {

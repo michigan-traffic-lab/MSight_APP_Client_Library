@@ -8,10 +8,27 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
+/**
+ * Desktop smoke test for the shared library.
+ *
+ * Runs a real [MSightClient] against a real MSight Cloud deployment with a simulated location
+ * source, printing every event it receives. It is the fastest way to check that a deployment is
+ * reachable, that this client's ids are registered, and that the message parsers handle what the
+ * cloud is actually sending — no device, no emulator, no UI.
+ *
+ * Run it with `./gradlew :shared:runJvmMain`. Every setting can be overridden by environment
+ * variable or JVM system property; see the defaults below.
+ */
+
 private object JvmPlatformContext : PlatformContext()
 
+/** Negative means run until interrupted. */
+
 private const val DEFAULT_TEST_RUNTIME_MILLIS = -1L
-private const val DEFAULT_CLOUD_URL = "https://7hmptbe8s3.execute-api.us-east-2.amazonaws.com"
+// No default: a cloud URL is deployment-specific, and baking one in would both leak whichever
+// deployment it names and let a misconfigured run silently connect to the wrong place. Supply it
+// via MSIGHT_CLOUD_URL or -Dmsight.cloudUrl.
+private const val DEFAULT_CLOUD_URL = ""
 private const val DEFAULT_APP_ID = "msight-demo"
 private const val DEFAULT_CLIENT_ID = "client-001"
 private const val DEFAULT_ROAD_USER_SUBTYPE = "passenger_car"
@@ -37,6 +54,25 @@ fun main() = runBlocking {
         propertyName = "msight.clientId",
         defaultValue = DEFAULT_CLIENT_ID
     )
+
+    if (cloudUrl.isBlank()) {
+        println(
+            """
+            No MSight Cloud URL configured.
+
+            Set the base URL of your MSight Cloud deployment — the HttpApiUrl printed by its
+            CDK deploy — and run again:
+
+                MSIGHT_CLOUD_URL=https://your-deployment.example.com ./gradlew :shared:runJvmMain
+
+            Optional overrides: MSIGHT_APP_ID (default "$DEFAULT_APP_ID"),
+            MSIGHT_CLIENT_ID (default "$DEFAULT_CLIENT_ID"),
+            MSIGHT_TEST_RUNTIME_MILLIS (negative runs until interrupted).
+            Each also accepts a JVM system property, e.g. -Dmsight.cloudUrl=...
+            """.trimIndent()
+        )
+        return@runBlocking
+    }
 
     println("Starting MSightClient JVM smoke test")
     println("cloudUrl=$cloudUrl")
@@ -114,6 +150,7 @@ private fun printEvent(event: MSightEvent) {
     }
 }
 
+/** Reads a setting from the environment, then a JVM system property, then the default. */
 private fun readStringSetting(
     envName: String,
     propertyName: String,
